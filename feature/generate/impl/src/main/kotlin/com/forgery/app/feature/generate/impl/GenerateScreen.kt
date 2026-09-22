@@ -14,7 +14,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import com.forgery.app.core.ui.ForgeryDropdown
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -45,6 +44,9 @@ import com.forgery.app.core.ui.DraftTextField
 import com.forgery.app.core.ui.ErrorState
 import com.forgery.app.core.ui.ForgeryDropdown
 import com.forgery.app.core.ui.LoadingState
+import com.forgery.app.core.ui.AspectRatioGrid
+import com.forgery.app.core.ui.SeedInputRow
+import com.forgery.app.core.ui.SizeInputRow
 
 @Composable
 internal fun GenerateRoute(
@@ -191,38 +193,85 @@ private fun GenerateContent(
         }
 
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ForgeryDropdown(
-                    label = "Sampler",
-                    options = state.samplers.ifEmpty { listOf(p.sampler) },
-                    selected = p.sampler,
-                    onSelect = { onAction(GenerateAction.SamplerChanged(it)) },
-                    modifier = Modifier.weight(1f),
-                )
-                ForgeryDropdown(
-                    label = "Scheduler",
-                    options = listOf("Normal", "Simple", "Karras", "Exponential", "SGM Uniform", "Align Your Steps"),
-                    selected = p.scheduler,
-                    onSelect = { onAction(GenerateAction.SchedulerChanged(it)) },
-                    modifier = Modifier.weight(1f),
-                )
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ForgeryDropdown(
+                            label = "Sampler",
+                            options = state.samplers.ifEmpty { listOf(p.sampler) },
+                            selected = p.sampler,
+                            onSelect = { onAction(GenerateAction.SamplerChanged(it)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        ForgeryDropdown(
+                            label = "Scheduler",
+                            options = schedulerOptionsFor(p.mode),
+                            selected = p.scheduler,
+                            onSelect = { onAction(GenerateAction.SchedulerChanged(it)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    SliderRow("Steps", p.steps.toString(), p.steps.toFloat(), 1f..50f, 49,
+                        parseManual = { parseStepsInput(it, 1f..50f)?.toFloat() },
+                        onChange = { onAction(GenerateAction.StepsChanged(it.toInt())) },
+                    )
+                    SliderRow("CFG", "%.1f".format(p.cfgScale), p.cfgScale.toFloat(), 0f..15f, 30,
+                        keyboardType = KeyboardType.Decimal,
+                        parseManual = { parseCfgInput(it, 0f..15f)?.toFloat() },
+                        onChange = { onAction(GenerateAction.CfgChanged((it.toDouble()))) },
+                    )
+                    if (p.mode == GenerationMode.FLUX) {
+                        DecimalField(
+                            label = "Distilled",
+                            value = p.distilledCfgScale,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { onAction(GenerateAction.DistilledChanged(it)) }
+                    }
+                    SizeInputRow(
+                        width = p.width,
+                        height = p.height,
+                        onSizeChange = { w, h -> onAction(GenerateAction.SizeChanged(w, h)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    AspectRatioGrid(
+                        mode = p.mode,
+                        currentWidth = p.width,
+                        currentHeight = p.height,
+                        onSelect = { w, h -> onAction(GenerateAction.SizeChanged(w, h)) },
+                        onFlip = { onAction(GenerateAction.SizeChanged(p.height, p.width)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DraftIntField(
+                            value = p.batchSize,
+                            onValueChange = { onAction(GenerateAction.BatchSizeChanged(it.coerceIn(1, 4))) },
+                            label = "Batch",
+                            maxDigits = 1,
+                            modifier = Modifier.width(72.dp),
+                        )
+                        DraftIntField(
+                            value = p.batchCount,
+                            onValueChange = { onAction(GenerateAction.BatchCountChanged(it.coerceIn(1, 8))) },
+                            label = "Count",
+                            maxDigits = 1,
+                            modifier = Modifier.width(72.dp),
+                        )
+                        SeedInputRow(
+                            seed = p.seed,
+                            onSeedChange = { onAction(GenerateAction.SeedChanged(it)) },
+                            onRandomize = { onAction(GenerateAction.SeedChanged(-1)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
-        }
-
-        item {
-            SliderRow("Steps", p.steps.toString(), p.steps.toFloat(), 1f..50f, 49,
-                parseManual = { parseStepsInput(it, 1f..50f)?.toFloat() },
-                onChange = { onAction(GenerateAction.StepsChanged(it.toInt())) },
-            )
-            SliderRow("CFG", "%.1f".format(p.cfgScale), p.cfgScale.toFloat(), 0f..15f, 30,
-                keyboardType = KeyboardType.Decimal,
-                parseManual = { parseCfgInput(it, 0f..15f)?.toFloat() },
-                onChange = { onAction(GenerateAction.CfgChanged((it.toDouble()))) },
-            )
-        }
-
-        item {
-            SizeRow(p, onAction)
         }
 
         item {
@@ -248,20 +297,6 @@ private fun GenerateContent(
                     onClick = onNavigateToPower,
                     modifier = Modifier.weight(1f),
                 ) { Text("POWER") }
-            }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SeedField(p.seed, Modifier.weight(1f)) {
-                    onAction(GenerateAction.SeedChanged(it))
-                }
-                Stepper("Batch", p.batchSize, 1..4, Modifier.weight(1f)) {
-                    onAction(GenerateAction.BatchSizeChanged(it))
-                }
-                Stepper("Count", p.batchCount, 1..8, Modifier.weight(1f)) {
-                    onAction(GenerateAction.BatchCountChanged(it))
-                }
             }
         }
 
@@ -510,48 +545,11 @@ internal fun parseCfgInput(raw: String, range: ClosedFloatingPointRange<Float>):
     return v.coerceIn(range.start.toDouble(), range.endInclusive.toDouble())
 }
 
-@Composable
-private fun SizeRow(p: GenerationParams, onAction: (GenerateAction) -> Unit) {
-    val presets = listOf(512, 768, 1024, 1216, 1344)
-    Column {
-        Text("Size: ${p.width}×${p.height}")
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ForgeryDropdown(
-                label = "W",
-                options = presets.map(Int::toString),
-                selected = p.width.toString(),
-                onSelect = { onAction(GenerateAction.SizeChanged(it.toInt(), p.height)) },
-                modifier = Modifier.weight(1f),
-            )
-            ForgeryDropdown(
-                label = "H",
-                options = presets.map(Int::toString),
-                selected = p.height.toString(),
-                onSelect = { onAction(GenerateAction.SizeChanged(p.width, it.toInt())) },
-                modifier = Modifier.weight(1f),
-            )
-            OutlinedButton(
-                onClick = { onAction(GenerateAction.SizeChanged(p.height, p.width)) },
-                modifier = Modifier.align(Alignment.CenterVertically),
-            ) { Text("⇄") }
-        }
-    }
-}
-
-@Composable
-private fun SeedField(seed: Long, modifier: Modifier = Modifier, onChange: (Long) -> Unit) {
-    DraftTextField(
-        value = if (seed < 0) "" else seed.toString(),
-        onValueChange = { raw ->
-            val digits = raw.filter(Char::isDigit).take(19)
-            onChange(if (digits.isEmpty()) -1 else digits.toLong())
-        },
-        label = "Seed (-1 rnd)",
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = modifier,
-    )
+/** Scheduler options per mode — mirrors resolver neo.js defaults + index.html selects. */
+internal fun schedulerOptionsFor(mode: GenerationMode): List<String> = when (mode) {
+    GenerationMode.SDXL -> listOf("Karras", "Normal", "Simple", "Exponential")
+    GenerationMode.FLUX -> listOf("Simple", "Beta", "Normal", "Karras")
+    GenerationMode.QWEN -> listOf("Simple", "Normal")
 }
 
 @Composable
@@ -589,29 +587,6 @@ private fun IntField(
         label = label,
         modifier = modifier,
     )
-}
-
-@Composable
-private fun Stepper(    label: String,
-    value: Int,
-    range: IntRange,
-    modifier: Modifier = Modifier,
-    onChange: (Int) -> Unit,
-) {
-    Column(modifier) {
-        Text("$label: $value")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(
-                onClick = { onChange((value - 1).coerceIn(range)) },
-                modifier = Modifier.width(48.dp),
-            ) { Text("−") }
-            Spacer(Modifier.width(4.dp))
-            OutlinedButton(
-                onClick = { onChange((value + 1).coerceIn(range)) },
-                modifier = Modifier.width(48.dp),
-            ) { Text("+") }
-        }
-    }
 }
 
 @Preview

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -37,12 +38,15 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.forgery.app.core.designsystem.ForgeryTheme
+import com.forgery.app.core.ui.DraftIntField
+import com.forgery.app.core.ui.DraftTextField
 import com.forgery.app.core.ui.ErrorState
 import com.forgery.app.core.ui.ForgeryDropdown
 import com.forgery.app.core.ui.LoadingState
@@ -199,17 +203,55 @@ private fun InpaintContent(
             }
 
             item {
-                SliderRow("Steps", state.steps.toString(), state.steps.toFloat(), 1f..50f, 49) {
-                    onAction(InpaintAction.StepsChanged(it.toInt()))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ForgeryDropdown(
+                        label = "Sampler",
+                        options = state.samplers.ifEmpty { listOf(state.sampler) },
+                        selected = state.sampler,
+                        onSelect = { onAction(InpaintAction.SamplerChanged(it)) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    ForgeryDropdown(
+                        label = "Scheduler",
+                        options = listOf("Normal", "Simple", "Karras", "Exponential"),
+                        selected = state.scheduler,
+                        onSelect = { onAction(InpaintAction.SchedulerChanged(it)) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-                SliderRow("CFG", "%.1f".format(state.cfgScale), state.cfgScale.toFloat(), 0f..15f, 30) {
-                    onAction(InpaintAction.CfgChanged(it.toDouble()))
+            }
+
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IntField(
+                        label = "Steps",
+                        value = state.steps,
+                        range = 1..50,
+                        modifier = Modifier.weight(1f),
+                    ) { onAction(InpaintAction.StepsChanged(it)) }
+                    DecimalField(
+                        label = "CFG",
+                        value = state.cfgScale,
+                        range = 0.0..15.0,
+                        modifier = Modifier.weight(1f),
+                    ) { onAction(InpaintAction.CfgChanged(it)) }
                 }
-                SliderRow("Denoise", "%.2f".format(state.denoise), state.denoise.toFloat(), 0f..1f, 20) {
-                    onAction(InpaintAction.DenoiseChanged(it.toDouble()))
-                }
-                SliderRow("Mask blur", state.maskBlur.toString(), state.maskBlur.toFloat(), 0f..32f, 32) {
-                    onAction(InpaintAction.MaskBlurChanged(it.toInt()))
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    DecimalField(
+                        label = "Denoise",
+                        value = state.denoise,
+                        range = 0.0..1.0,
+                        modifier = Modifier.weight(1f),
+                    ) { onAction(InpaintAction.DenoiseChanged(it)) }
+                    IntField(
+                        label = "Mask blur",
+                        value = state.maskBlur,
+                        range = 0..64,
+                        modifier = Modifier.weight(1f),
+                    ) { onAction(InpaintAction.MaskBlurChanged(it)) }
                 }
             }
 
@@ -328,6 +370,45 @@ private fun SliderRow(
         }
         Slider(value = sliderValue, onValueChange = onChange, valueRange = range, steps = steps)
     }
+}
+
+@Composable
+private fun DecimalField(
+    label: String,
+    value: Double,
+    range: ClosedFloatingPointRange<Double>,
+    modifier: Modifier = Modifier,
+    onValueChange: (Double) -> Unit,
+) {
+    DraftTextField(
+        value = if (value.isNaN()) "" else value.toString(),
+        onValueChange = { raw ->
+            val clean = raw.filter { it.isDigit() || it == '.' }
+            if (clean.count { it == '.' } <= 1) {
+                clean.toDoubleOrNull()?.coerceIn(range)?.let(onValueChange)
+            }
+        },
+        label = label,
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun IntField(
+    label: String,
+    value: Int,
+    range: IntRange,
+    modifier: Modifier = Modifier,
+    onValueChange: (Int) -> Unit,
+) {
+    DraftIntField(
+        value = value,
+        onValueChange = { onValueChange(it.coerceIn(range)) },
+        label = label,
+        modifier = modifier,
+    )
 }
 
 @Preview

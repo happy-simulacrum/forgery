@@ -41,7 +41,7 @@ fun defaultParamsFor(mode: com.forgery.app.core.model.GenerationMode): Generatio
             sampler = "Euler a", scheduler = "Karras",
         )
         com.forgery.app.core.model.GenerationMode.FLUX -> GenerationParams(
-            mode = mode, steps = 20, cfgScale = 3.5, width = 1024, height = 1024,
+            mode = mode, steps = 20, cfgScale = 3.5, distilledCfgScale = 3.5, width = 1024, height = 1024,
             sampler = "Euler", scheduler = "Normal",
         )
         com.forgery.app.core.model.GenerationMode.QWEN -> GenerationParams(

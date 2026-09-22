@@ -502,6 +502,29 @@ class GenerateViewModelTest {
     }
 
     @Test
+    fun `distilled action updates params`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.DistilledChanged(5.0))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.distilledCfgScale == 5.0
+        } as GenerateUiState.Success
+        assertEquals(5.0, state.params.distilledCfgScale, 1e-9)
+    }
+
+    @Test
+    fun `size keeps non-64 grid values as is`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.SizeChanged(1254, 836))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.width == 1254 && it.params.height == 836
+        } as GenerateUiState.Success
+        assertEquals(1254, state.params.width)
+        assertEquals(836, state.params.height)
+    }
+
+    @Test
     fun `unload request shows confirmation`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }

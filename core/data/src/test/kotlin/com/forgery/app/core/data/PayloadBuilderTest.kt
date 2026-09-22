@@ -74,4 +74,27 @@ class PayloadBuilderTest {
         val overrides = back["override_settings"] as Map<String, Any?>
         assertEquals("model.safetensors", overrides["sd_model_checkpoint"])
     }
+
+    @Test
+    fun `flux payload contains distilled_cfg_scale`() {
+        val p = buildTxt2ImgPayload(base.copy(mode = GenerationMode.FLUX))
+        assertTrue(p.containsKey("distilled_cfg_scale"))
+        assertEquals(3.5, p["distilled_cfg_scale"])
+    }
+
+    @Test
+    fun `sdxl payload omits distilled_cfg_scale`() {
+        assertFalse(buildTxt2ImgPayload(base.copy(mode = GenerationMode.SDXL)).containsKey("distilled_cfg_scale"))
+    }
+
+    @Test
+    fun `qwen payload omits distilled_cfg_scale`() {
+        assertFalse(buildTxt2ImgPayload(base.copy(mode = GenerationMode.QWEN)).containsKey("distilled_cfg_scale"))
+    }
+
+    @Test
+    fun `flux custom distilled value is passed through`() {
+        val p = buildTxt2ImgPayload(base.copy(mode = GenerationMode.FLUX, distilledCfgScale = 5.0))
+        assertEquals(5.0, p["distilled_cfg_scale"])
+    }
 }

@@ -100,6 +100,8 @@ class InpaintViewModel @Inject constructor(
             is InpaintAction.CfgChanged -> editor.value = e.copy(cfgScale = action.value)
             is InpaintAction.DenoiseChanged -> editor.value = e.copy(denoise = action.value)
             is InpaintAction.MaskBlurChanged -> editor.value = e.copy(maskBlur = action.value)
+            is InpaintAction.SamplerChanged -> editor.value = e.copy(sampler = action.value)
+            is InpaintAction.SchedulerChanged -> editor.value = e.copy(scheduler = action.value)
             is InpaintAction.BrushChanged -> editor.value = e.copy(brush = action.value)
             is InpaintAction.EraseModeChanged -> editor.value = e.copy(eraseMode = action.value)
             is InpaintAction.StrokeStarted -> {
@@ -193,6 +195,11 @@ class InpaintViewModel @Inject constructor(
                 is Result.Error -> modelsError.value = r.message
                 is Result.Loading -> Unit
             }
+            when (val s = generationRepository.fetchSamplers()) {
+                is Result.Success -> editor.value = editor.value.copy(samplers = s.data)
+                is Result.Error -> Unit
+                is Result.Loading -> Unit
+            }
             modelsLoading.value = false
         }
     }
@@ -223,6 +230,8 @@ class InpaintViewModel @Inject constructor(
                     width = source.width,
                     height = source.height,
                     modelTitle = e.modelTitle,
+                    sampler = e.sampler,
+                    scheduler = e.scheduler,
                 )
                 val payload = buildImg2ImgPayload(
                     params = params,
@@ -262,6 +271,8 @@ sealed interface InpaintAction {
     data class CfgChanged(val value: Double) : InpaintAction
     data class DenoiseChanged(val value: Double) : InpaintAction
     data class MaskBlurChanged(val value: Int) : InpaintAction
+    data class SamplerChanged(val value: String) : InpaintAction
+    data class SchedulerChanged(val value: String) : InpaintAction
     data class BrushChanged(val value: Float) : InpaintAction
     data class EraseModeChanged(val value: Boolean) : InpaintAction
     data class StrokeStarted(val point: MaskPoint) : InpaintAction

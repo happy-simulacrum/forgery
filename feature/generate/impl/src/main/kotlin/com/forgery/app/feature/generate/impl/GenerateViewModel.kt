@@ -134,6 +134,7 @@ class GenerateViewModel @Inject constructor(
                 sampler = r.sampler ?: cur.sampler,
                 scheduler = r.scheduler ?: cur.scheduler,
                 cfgScale = r.cfgScale ?: cur.cfgScale,
+                distilledCfgScale = r.distilledCfgScale ?: cur.distilledCfgScale,
                 seed = r.seed ?: cur.seed,
                 width = r.width ?: cur.width,
                 height = r.height ?: cur.height,
@@ -157,6 +158,8 @@ class GenerateViewModel @Inject constructor(
             is GenerateAction.SchedulerChanged -> rest.value = rest.value.copy(scheduler = action.value)
             is GenerateAction.StepsChanged -> rest.value = rest.value.copy(steps = action.value)
             is GenerateAction.CfgChanged -> rest.value = rest.value.copy(cfgScale = action.value)
+            is GenerateAction.DistilledChanged -> rest.value =
+                rest.value.copy(distilledCfgScale = action.value)
             is GenerateAction.SizeChanged -> rest.value =
                 rest.value.copy(width = action.width, height = action.height)
             is GenerateAction.SeedChanged -> rest.value = rest.value.copy(seed = action.value)
@@ -321,6 +324,7 @@ sealed interface GenerateAction {
     data class SchedulerChanged(val value: String) : GenerateAction
     data class StepsChanged(val value: Int) : GenerateAction
     data class CfgChanged(val value: Double) : GenerateAction
+    data class DistilledChanged(val value: Double) : GenerateAction
     data class SizeChanged(val width: Int, val height: Int) : GenerateAction
     data class SeedChanged(val value: Long) : GenerateAction
     data class BatchSizeChanged(val value: Int) : GenerateAction
