@@ -1,0 +1,23 @@
+plugins {
+    alias(libs.plugins.forgery.android.feature)
+    alias(libs.plugins.forgery.android.library.compose)
+}
+
+android {
+    namespace = "com.forgery.app.feature.analyze.impl"
+}
+
+dependencies {
+    api(projects.feature.analyze.api)
+
+    implementation(projects.core.data)
+    implementation(projects.core.ui)
+    implementation(projects.core.designsystem)
+    implementation(libs.coil.compose)
+    implementation(libs.androidx.activity.compose)
+
+    testImplementation(projects.core.testing)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
+}

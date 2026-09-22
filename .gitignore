@@ -1,0 +1,63 @@
+# Gradle
+.gradle/
+**/build/
+!src/**/build/
+
+# Gradle wrapper (project currently uses system gradle, keep these rules for the future)
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/libs.versions.toml
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+.atlassian-ide-plugin.xml
+.com.google.androidstudio.*
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# Android local config — contains sdk.dir, must never be committed
+local.properties
+
+# Android build artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+
+# Signing configs / secrets — do not commit real keys
+*.jks
+*.keystore
+*.p12
+keystore.properties
+*.key
+
+# Kotlin
+.kotlin/
+kotlin-js-store/
+
+# Java crash logs
+hs_err_pid*
+replay_pid*
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/

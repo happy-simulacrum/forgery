@@ -1,0 +1,265 @@
+package com.forgery.app.core.data
+
+import android.content.Context
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.forgery.app.core.database.QueueStateDao
+import com.forgery.app.core.database.QueueStateEntity
+import com.forgery.app.core.model.QueueJob
+import com.forgery.app.core.model.QueueResult
+import com.forgery.app.core.model.QueueSnapshot
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import javax.inject.Inject
+import javax.inject.Singleton
+
+private val QueueJson = Json { ignoreUnknownKeys = true }
+
+interface QueueRepository {
+    fun observeSnapshot(): Flow<QueueSnapshot?>
+    fun observeJobs(): Flow<List<QueueJob>>
+    fun observeResults(): Flow<List<QueueResult>>
+
+    /**
+     * Persist jobs without starting execution (QUEUE button).
+     * Idle (or empty queue): overwrites the staged state with running=false.
+     * Running with a non-empty queue: appends to the tail so the executing
+     * queue is never reset (running/currentIndex/resultsJson/host/origin kept).
+     */
+    suspend fun stage(jobs: List<QueueJob>, origin: String)
+
+    /** Start execution of staged jobs (QUE "Start Queue"). No-op when empty/running/no pending. */
+    suspend fun start()
+
+    /**
+     * GENERATE button: start immediately when idle; when a batch is running,
+     * insert right after the currently executing job.
+     */
+    suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String)
+
+    suspend fun cancel()
+
+    /**
+     * Clear completed section (DONE): removes jobs that have a [QueueResult]
+     * (success or failure) plus their results. History table is untouched —
+     * images stay in Gallery/HISTORY.
+     */
+    suspend fun clearCompleted()
+
+    /**
+     * Clear pending section (TO DO):
+     * - idle: removes all jobs without a result, keeps results/history;
+     * - running: removes all jobs after the currently executing one
+     *   (index = currentIndex), keeps past + current. Worker is not
+     *   cancelled; it finishes the current job and stops (it re-reads
+     *   the job list from DB every iteration).
+     */
+    suspend fun clearPending()
+}
+
+@Singleton
+class DefaultQueueRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val dao: QueueStateDao,
+    private val connectionRepository: ConnectionRepository,
+) : QueueRepository {
+
+    override fun observeSnapshot(): Flow<QueueSnapshot?> =
+        dao.observe().map { e ->
+            e?.let {
+                QueueSnapshot(
+                    running = it.running,
+                    currentIndex = it.currentIndex,
+                    total = it.total,
+                    origin = it.origin,
+                    stopReason = null,
+                    jobProgress = it.jobProgress,
+                )
+            }
+        }
+
+    override fun observeJobs(): Flow<List<QueueJob>> =
+        dao.observe().map { e -> decodeJobs(e?.jobsJson) }
+
+    override fun observeResults(): Flow<List<QueueResult>> =
+        dao.observe().map { e ->
+            if (e == null || e.resultsJson.isBlank()) emptyList()
+            else QueueJson.decodeFromString(ListSerializer(QueueResult.serializer()), e.resultsJson)
+        }
+
+    override suspend fun stage(jobs: List<QueueJob>, origin: String) {
+        require(jobs.isNotEmpty())
+        val state = dao.get()
+        val currentJobs = decodeJobs(state?.jobsJson)
+        if (state != null && state.running && currentJobs.isNotEmpty()) {
+            // Append to tail: never reset a running queue (only cancel()
+            // may clear running). Worker re-reads jobs from DB each iteration.
+            val newJobs = currentJobs + jobs
+            dao.save(
+                state.copy(
+                    jobsJson = encodeJobs(newJobs),
+                    total = newJobs.size,
+                    jobProgress = 0f,
+                ),
+            )
+            return
+        }
+        val host = connectionRepository.observe().first().webUiBaseUrl()
+        dao.save(
+            QueueStateEntity(
+                running = false,
+                currentIndex = 0,
+                total = jobs.size,
+                origin = origin,
+                host = host,
+                jobsJson = encodeJobs(jobs),
+                resultsJson = "[]",
+                jobProgress = 0f,
+            ),
+        )
+    }
+
+    override suspend fun start() {
+        val state = dao.get() ?: return
+        val jobs = decodeJobs(state.jobsJson)
+        if (state.running || jobs.isEmpty()) return
+        val doneIds = decodeResults(state.resultsJson).map { it.jobId }.toSet()
+        val pending = jobs.filter { it.id !in doneIds }
+        if (pending.isEmpty()) return
+        dao.save(state.copy(running = true, jobProgress = 0f))
+        launchWorker(state.host, state.jobsJson, state.origin)
+    }
+
+    override suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String) {
+        require(jobs.isNotEmpty())
+        val state = dao.get()
+        val currentJobs = decodeJobs(state?.jobsJson)
+        if (state != null && state.running && currentJobs.isNotEmpty()) {
+            // Insert right after the currently executing job; the worker
+            // re-reads the job list from the DB every iteration.
+            val at = (state.currentIndex + 1).coerceIn(0, currentJobs.size)
+            val merged = currentJobs.take(at) + jobs + currentJobs.drop(at)
+            dao.save(
+                state.copy(
+                    jobsJson = encodeJobs(merged),
+                    total = merged.size,
+                ),
+            )
+        } else {
+            val host = connectionRepository.observe().first().webUiBaseUrl()
+            val jobsJson = encodeJobs(jobs)
+            dao.save(
+                QueueStateEntity(
+                    running = true,
+                    currentIndex = 0,
+                    total = jobs.size,
+                    origin = origin,
+                    host = host,
+                    jobsJson = jobsJson,
+                    resultsJson = "[]",
+                    jobProgress = 0f,
+                ),
+            )
+            launchWorker(host, jobsJson, origin)
+        }
+    }
+
+    override suspend fun cancel() {
+        WorkManager.getInstance(context).cancelUniqueWork(GenerationWorker.UNIQUE_QUEUE)
+        dao.get()?.let { dao.save(it.copy(running = false)) }
+    }
+
+    override suspend fun clearCompleted() {
+        val state = dao.get() ?: return
+        val jobs = decodeJobs(state.jobsJson)
+        val results = decodeResults(state.resultsJson)
+        val doneIds = results.map { it.jobId }.toSet()
+        val newJobs = jobs.filter { it.id !in doneIds }
+        val newResults = results.filter { it.jobId !in doneIds }
+        dao.save(
+            state.copy(
+                jobsJson = encodeJobs(newJobs),
+                resultsJson = encodeResults(newResults),
+                total = newJobs.size,
+                currentIndex = minOf(state.currentIndex, newJobs.size),
+            ),
+        )
+    }
+
+    override suspend fun clearPending() {
+        val state = dao.get() ?: return
+        val jobs = decodeJobs(state.jobsJson)
+        val results = decodeResults(state.resultsJson)
+        if (!state.running) {
+            val doneIds = results.map { it.jobId }.toSet()
+            val newJobs = jobs.filter { it.id in doneIds }
+            dao.save(
+                state.copy(
+                    jobsJson = encodeJobs(newJobs),
+                    total = newJobs.size,
+                    currentIndex = 0,
+                ),
+            )
+        } else {
+            val keep = jobs.take((state.currentIndex + 1).coerceIn(0, jobs.size))
+            val removed = jobs.drop(keep.size)
+            val newResults = results.filter { r -> removed.none { it.id == r.jobId } }
+            dao.save(
+                state.copy(
+                    jobsJson = encodeJobs(keep),
+                    resultsJson = encodeResults(newResults),
+                    total = keep.size,
+                ),
+            )
+        }
+    }
+
+    private fun launchWorker(host: String, jobsJson: String, origin: String) {
+        val request = OneTimeWorkRequestBuilder<GenerationWorker>()
+            .setInputData(
+                workDataOf(
+                    GenerationWorker.KEY_HOST to host,
+                    GenerationWorker.KEY_JOBS to jobsJson,
+                    GenerationWorker.KEY_ORIGIN to origin,
+                ),
+            )
+            .addTag(GenerationWorker.TAG_QUEUE)
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(GenerationWorker.UNIQUE_QUEUE, ExistingWorkPolicy.REPLACE, request)
+        scheduleWatchdog()
+    }
+
+    private fun scheduleWatchdog() {
+        val request = PeriodicWorkRequestBuilder<QueueWatchdogWorker>(
+            15, java.util.concurrent.TimeUnit.MINUTES,
+        ).addTag(QueueWatchdogWorker.TAG_WATCHDOG).build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            QueueWatchdogWorker.UNIQUE_WATCHDOG,
+            ExistingPeriodicWorkPolicy.KEEP,
+            request,
+        )
+    }
+
+    private fun encodeJobs(jobs: List<QueueJob>): String =
+        QueueJson.encodeToString(ListSerializer(QueueJob.serializer()), jobs)
+
+    private fun decodeJobs(raw: String?): List<QueueJob> =
+        if (raw.isNullOrBlank()) emptyList()
+        else QueueJson.decodeFromString(ListSerializer(QueueJob.serializer()), raw)
+
+    private fun encodeResults(results: List<QueueResult>): String =
+        QueueJson.encodeToString(ListSerializer(QueueResult.serializer()), results)
+
+    private fun decodeResults(raw: String?): List<QueueResult> =
+        if (raw.isNullOrBlank()) emptyList()
+        else QueueJson.decodeFromString(ListSerializer(QueueResult.serializer()), raw)
+}
