@@ -29,8 +29,10 @@ interface QueueRepository {
     fun observeResults(): Flow<List<QueueResult>>
 
     /**
-     * Persist jobs without starting execution (QUEUE button).
-     * Idle (or empty queue): overwrites the staged state with running=false.
+     * Persist jobs without starting execution (QUEUE button). Always appends,
+     * never replaces: repeated presses accumulate items in TO DO.
+     * Idle: appends to staged jobs, keeps results/currentIndex (a finished
+     * batch keeps its DONE section, new jobs land behind it).
      * Running with a non-empty queue: appends to the tail so the executing
      * queue is never reset (running/currentIndex/resultsJson/host/origin kept).
      */
@@ -107,6 +109,22 @@ class DefaultQueueRepository @Inject constructor(
                 state.copy(
                     jobsJson = encodeJobs(newJobs),
                     total = newJobs.size,
+                    jobProgress = 0f,
+                ),
+            )
+            return
+        }
+        if (state != null && !state.running) {
+            // Idle with staged state: append behind existing jobs (DONE section
+            // and results stay intact), never replace.
+            val newJobs = currentJobs + jobs
+            dao.save(
+                state.copy(
+                    running = false,
+                    total = newJobs.size,
+                    origin = origin,
+                    host = connectionRepository.observe().first().webUiBaseUrl(),
+                    jobsJson = encodeJobs(newJobs),
                     jobProgress = 0f,
                 ),
             )

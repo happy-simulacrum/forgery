@@ -218,7 +218,7 @@ class QueueRepositoryTest {
     }
 
     @Test
-    fun `stage while idle overwrites with running false`() = runTest {
+    fun `stage while idle appends behind staged jobs`() = runTest {
         val dao = FakeQueueStateDao(
             queueState(
                 running = false,
@@ -230,12 +230,45 @@ class QueueRepositoryTest {
         repo(dao).stage(listOf(queueJob("9")), "queue")
 
         val saved = dao.get()!!
-        assertEquals(listOf("9"), decodeTestJobs(saved.jobsJson).map { it.id })
-        assertEquals("[]", saved.resultsJson)
-        assertEquals(1, saved.total)
-        assertEquals(0, saved.currentIndex)
+        assertEquals(listOf("1", "2", "9"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertEquals(3, saved.total)
+        assertEquals(1, saved.currentIndex)
         assertFalse(saved.running)
         assertEquals("queue", saved.origin)
+    }
+
+    @Test
+    fun `repeated stage presses accumulate items`() = runTest {
+        val dao = FakeQueueStateDao(null)
+        val repository = repo(dao)
+        repository.stage(listOf(queueJob("1")), "single")
+        repository.stage(listOf(queueJob("2")), "single")
+        repository.stage(listOf(queueJob("3")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(3, saved.total)
+        assertFalse(saved.running)
+    }
+
+    @Test
+    fun `stage after completed batch keeps DONE section`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        repo(dao).stage(listOf(queueJob("2")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertEquals(2, saved.total)
+        assertFalse(saved.running)
     }
 
     @Test
