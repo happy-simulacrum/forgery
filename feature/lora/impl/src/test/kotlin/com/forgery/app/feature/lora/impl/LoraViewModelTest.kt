@@ -43,6 +43,7 @@ private class FakeGenerationRepository : GenerationRepository {
     override suspend fun img2img(payload: Map<String, Any?>): Result<List<String>> =
         Result.Success(emptyList())
     override suspend fun progress(): Result<Double> = Result.Success(0.0)
+    override suspend fun unloadModel(): Result<Unit> = Result.Success(Unit)
 }
 
 private class FakeLoraRepository : LoraRepository {

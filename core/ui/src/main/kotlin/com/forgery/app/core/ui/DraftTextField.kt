@@ -1,6 +1,5 @@
 package com.forgery.app.core.ui
 
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -10,15 +9,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 /**
  * Text field for values backed by an asynchronous store (DataStore, Room).
  *
  * Keystrokes update local state synchronously so the IME cursor never
- * drifts; the external [value] is only adopted when it changes underneath
- * the local text (mode switch, LoRA/Style insert, server refresh). Without
- * this, every keystroke round-trips through the store and the echoed value
- * races the IME, scrambling input ("hello" -> "athlloe").
+ * drifts; the external [value] is only adopted when it differs from the
+ * local text (mode switch, LoRA/Style insert, server refresh, out-of-order
+ * store echo during fast input). Adoption preserves the cursor, only
+ * clamping it to the new length — without this, every programmatic text
+ * swap resets the selection and fast delete races the IME ("hello" ->
+ * "athlloe", cursor jumps on hold-delete).
  */
 @Composable
 fun DraftTextField(
@@ -31,16 +34,18 @@ fun DraftTextField(
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
     var lastExternal by rememberSaveable { mutableStateOf(value) }
-    var local by rememberSaveable { mutableStateOf(value) }
+    var field by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(value))
+    }
     if (value != lastExternal) {
         lastExternal = value
-        local = value
+        field = adoptExternal(field, value)
     }
     OutlinedTextField(
-        value = local,
+        value = field,
         onValueChange = {
-            local = it
-            onValueChange(it)
+            field = it
+            onValueChange(it.text)
         },
         label = label?.let { { Text(it) } },
         singleLine = singleLine,
@@ -48,6 +53,21 @@ fun DraftTextField(
         keyboardOptions = keyboardOptions,
         modifier = modifier,
     )
+}
+
+/**
+ * Merges an external text update into the current [TextFieldValue],
+ * preserving the cursor/selection (clamped to the new length).
+ * Pure — unit-tested.
+ */
+internal fun adoptExternal(current: TextFieldValue, external: String): TextFieldValue {
+    if (current.text == external) return current
+    val sel = current.selection
+    val clamped = TextRange(
+        sel.start.coerceIn(0, external.length),
+        sel.end.coerceIn(0, external.length),
+    )
+    return current.copy(text = external, selection = clamped)
 }
 
 /** Numeric variant: forwards only parseable input, keeps placeholder text local. */

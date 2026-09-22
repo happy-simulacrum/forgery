@@ -541,13 +541,13 @@ private fun SizeRow(p: GenerationParams, onAction: (GenerateAction) -> Unit) {
 
 @Composable
 private fun SeedField(seed: Long, modifier: Modifier = Modifier, onChange: (Long) -> Unit) {
-    OutlinedTextField(
+    DraftTextField(
         value = if (seed < 0) "" else seed.toString(),
         onValueChange = { raw ->
             val digits = raw.filter(Char::isDigit).take(19)
             onChange(if (digits.isEmpty()) -1 else digits.toLong())
         },
-        label = { Text("Seed (-1 rnd)") },
+        label = "Seed (-1 rnd)",
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = modifier,
