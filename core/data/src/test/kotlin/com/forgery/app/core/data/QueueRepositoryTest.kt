@@ -2,6 +2,7 @@ package com.forgery.app.core.data
 
 import android.content.Context
 import android.content.ContextWrapper
+import androidx.work.ExistingWorkPolicy
 import com.forgery.app.core.database.QueueStateDao
 import com.forgery.app.core.database.QueueStateEntity
 import com.forgery.app.core.model.ConnectionConfig
@@ -125,9 +126,10 @@ class QueueRepositoryTest {
      */
     private class LaunchRecordingRepository(dao: FakeQueueStateDao) :
         DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo()) {
-        val launches = mutableListOf<Triple<String, String, String>>()
-        override fun launchWorker(host: String, jobsJson: String, origin: String) {
-            launches += Triple(host, jobsJson, origin)
+        data class Launch(val host: String, val jobsJson: String, val origin: String, val policy: ExistingWorkPolicy)
+        val launches = mutableListOf<Launch>()
+        override fun launchWorker(host: String, jobsJson: String, origin: String, policy: ExistingWorkPolicy) {
+            launches += Launch(host, jobsJson, origin, policy)
         }
     }
 
@@ -409,6 +411,37 @@ class QueueRepositoryTest {
     }
 
     @Test
+    fun `enqueueImmediate idle clamps stale currentIndex past end`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 2,
+                jobs = listOf(queueJob("1")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.enqueueImmediate(listOf(queueJob("2")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(1, saved.currentIndex)
+        assertEquals(2, saved.total)
+        assertTrue(saved.running)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `enqueueImmediate idle launches worker with REPLACE`() = runTest {
+        val dao = FakeQueueStateDao(null)
+        val repository = LaunchRecordingRepository(dao)
+        repository.enqueueImmediate(listOf(queueJob("1")), "single")
+
+        assertEquals(1, repository.launches.size)
+        assertEquals(ExistingWorkPolicy.REPLACE, repository.launches.first().policy)
+    }
+
+    @Test
     fun `enqueueImmediate idle after completed batch keeps DONE section`() = runTest {
         val dao = FakeQueueStateDao(
             queueState(
@@ -431,7 +464,7 @@ class QueueRepositoryTest {
     }
 
     @Test
-    fun `enqueueImmediate running inserts after current without launching`() = runTest {
+    fun `enqueueImmediate running inserts after current and pings worker with KEEP`() = runTest {
         val dao = FakeQueueStateDao(
             queueState(
                 running = true,
@@ -448,7 +481,28 @@ class QueueRepositoryTest {
         assertTrue(saved.running)
         assertEquals(0, saved.currentIndex)
         assertEquals(3, saved.total)
-        assertTrue(repository.launches.isEmpty())
+        // KEEP: no-op when the worker is alive, relaunch when it died stale.
+        assertEquals(1, repository.launches.size)
+        assertEquals(ExistingWorkPolicy.KEEP, repository.launches.first().policy)
+        assertEquals(saved.jobsJson, repository.launches.first().jobsJson)
+    }
+
+    @Test
+    fun `start while running pings worker with KEEP instead of no-op`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1")),
+                results = emptyList(),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.start()
+
+        assertTrue(dao.get()!!.running)
+        assertEquals(1, repository.launches.size)
+        assertEquals(ExistingWorkPolicy.KEEP, repository.launches.first().policy)
     }
 
     @Test

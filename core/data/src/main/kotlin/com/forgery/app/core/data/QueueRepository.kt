@@ -38,13 +38,17 @@ interface QueueRepository {
      */
     suspend fun stage(jobs: List<QueueJob>, origin: String)
 
-    /** Start execution of staged jobs (QUE "Start Queue"). No-op when empty/running/no pending. */
+    /** Start execution of staged jobs (QUE "Start Queue"). No-op when empty/no pending. */
     suspend fun start()
 
     /**
      * GENERATE button: append behind existing jobs and start everything when
      * idle (never replaces the staged queue); when a batch is running,
-     * insert right after the currently executing job.
+     * insert right after the currently executing job. The running branch
+     * always re-enqueues the worker with KEEP: a no-op when the worker is
+     * alive, a relaunch when it died leaving a stale `running=true`
+     * (second GENERATE used to stall with "Added behind current job" until
+     * an app restart).
      */
     suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String)
 
@@ -167,7 +171,13 @@ open class DefaultQueueRepository @Inject constructor(
     override suspend fun start() {
         val state = dao.get() ?: return
         val jobs = decodeJobs(state.jobsJson)
-        if (state.running || jobs.isEmpty()) return
+        if (jobs.isEmpty()) return
+        if (state.running) {
+            // Stale-running self-heal (same as enqueueImmediate below): KEEP
+            // is a no-op when the worker is alive, a relaunch when it died.
+            launchWorker(state.host, state.jobsJson, state.origin, ExistingWorkPolicy.KEEP)
+            return
+        }
         val doneIds = decodeResults(state.resultsJson).map { it.jobId }.toSet()
         val pending = jobs.filter { it.id !in doneIds }
         if (pending.isEmpty()) return
@@ -181,15 +191,19 @@ open class DefaultQueueRepository @Inject constructor(
         val currentJobs = decodeJobs(state?.jobsJson)
         if (state != null && state.running && currentJobs.isNotEmpty()) {
             // Insert right after the currently executing job; the worker
-            // re-reads the job list from the DB every iteration.
+            // re-reads the job list from the DB every iteration. Always
+            // re-enqueue with KEEP: no-op when the worker is alive, relaunch
+            // when it died leaving a stale running flag.
             val at = (state.currentIndex + 1).coerceIn(0, currentJobs.size)
             val merged = currentJobs.take(at) + jobs + currentJobs.drop(at)
+            val mergedJson = encodeJobs(merged)
             dao.save(
                 state.copy(
-                    jobsJson = encodeJobs(merged),
+                    jobsJson = mergedJson,
                     total = merged.size,
                 ),
             )
+            launchWorker(state.host, mergedJson, state.origin, ExistingWorkPolicy.KEEP)
         } else if (state != null && currentJobs.isNotEmpty()) {
             // Idle with an existing queue: append behind existing jobs (DONE
             // results and currentIndex are kept — currentIndex already points
@@ -201,6 +215,10 @@ open class DefaultQueueRepository @Inject constructor(
             dao.save(
                 state.copy(
                     running = true,
+                    // Clamp a stale pointer (seen: currentIndex=2 with 1 job
+                    // after older builds); otherwise the worker breaks
+                    // immediately and the new job starves. No-op when sane.
+                    currentIndex = state.currentIndex.coerceIn(0, currentJobs.size),
                     total = merged.size,
                     origin = origin,
                     host = host,
@@ -336,7 +354,12 @@ open class DefaultQueueRepository @Inject constructor(
         }
     }
 
-    protected open fun launchWorker(host: String, jobsJson: String, origin: String) {
+    protected open fun launchWorker(
+        host: String,
+        jobsJson: String,
+        origin: String,
+        policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
+    ) {
         val request = OneTimeWorkRequestBuilder<GenerationWorker>()
             .setInputData(
                 workDataOf(
@@ -348,7 +371,7 @@ open class DefaultQueueRepository @Inject constructor(
             .addTag(GenerationWorker.TAG_QUEUE)
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniqueWork(GenerationWorker.UNIQUE_QUEUE, ExistingWorkPolicy.REPLACE, request)
+            .enqueueUniqueWork(GenerationWorker.UNIQUE_QUEUE, policy, request)
         scheduleWatchdog()
     }
 

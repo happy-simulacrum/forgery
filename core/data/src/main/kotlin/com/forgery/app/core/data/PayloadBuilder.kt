@@ -23,7 +23,11 @@ private val JsonLenient = kotlinx.serialization.json.Json { ignoreUnknownKeys = 
  * applies the sanitizer right before POST.
  * Mirrors resolver engine.js: `distilled_cfg_scale` is written for FLUX only
  * (SDXL/QWEN must not carry the key). Neo `forge_additional_modules`
- * (VAE / Text Encoder) is written for SDXL only, when selected.
+ * (VAE / Text Encoder) is written for SDXL always — even when empty, so the
+ * per-request override masks a stale server-global selection (VAE leak used
+ * to produce dark/wrong images after the user cleared the picker or switched
+ * to FLUX/QWEN). `sd_model_checkpoint` is omitted when blank so we never
+ * reset the server checkpoint with an empty override.
  */
 fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
     val payload = mutableMapOf<String, Any?>(
@@ -53,14 +57,16 @@ fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
         payload["hr_cfg"] = params.hrCfg
         payload["hr_additional_modules"] = listOf("Use same choices")
     }
-    payload["override_settings"] = mutableMapOf<String, Any?>(
-        "sd_model_checkpoint" to params.modelTitle,
-    )
-    if (params.mode == GenerationMode.SDXL && params.additionalModules.isNotEmpty()) {
-        @Suppress("UNCHECKED_CAST")
-        (payload["override_settings"] as MutableMap<String, Any?>)[
-            "forge_additional_modules"
-        ] = params.additionalModules
+    val overrides = buildMap<String, Any?> {
+        if (params.modelTitle.isNotBlank()) {
+            put("sd_model_checkpoint", params.modelTitle)
+        }
+        if (params.mode == GenerationMode.SDXL) {
+            put("forge_additional_modules", params.additionalModules)
+        }
+    }
+    if (overrides.isNotEmpty()) {
+        payload["override_settings"] = overrides
     }
     return payload
 }

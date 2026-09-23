@@ -107,10 +107,10 @@ class PayloadBuilderTest {
     }
 
     @Test
-    fun `modules omitted when empty`() {
+    fun `sdxl empty modules sent as empty list to mask stale server global`() {
         @Suppress("UNCHECKED_CAST")
         val overrides = buildTxt2ImgPayload(base)["override_settings"] as Map<String, Any?>
-        assertFalse(overrides.containsKey("forge_additional_modules"))
+        assertEquals(emptyList<String>(), overrides["forge_additional_modules"])
     }
 
     @Test
@@ -143,5 +143,24 @@ class PayloadBuilderTest {
         @Suppress("UNCHECKED_CAST")
         val overrides = back["override_settings"] as Map<String, Any?>
         assertEquals(listOf("ae.safetensors"), overrides["forge_additional_modules"])
+    }
+
+    @Test
+    fun `blank model omits checkpoint override instead of resetting server`() {
+        @Suppress("UNCHECKED_CAST")
+        val overrides =
+            buildTxt2ImgPayload(base.copy(modelTitle = ""))["override_settings"] as Map<String, Any?>
+        assertFalse(overrides.containsKey("sd_model_checkpoint"))
+        // SDXL modules key still masks the stale global.
+        assertEquals(emptyList<String>(), overrides["forge_additional_modules"])
+    }
+
+    @Test
+    fun `blank model outside sdxl omits override_settings entirely`() {
+        assertFalse(
+            buildTxt2ImgPayload(
+                base.copy(mode = GenerationMode.FLUX, modelTitle = ""),
+            ).containsKey("override_settings"),
+        )
     }
 }

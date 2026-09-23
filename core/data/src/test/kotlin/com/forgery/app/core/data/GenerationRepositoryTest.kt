@@ -160,11 +160,22 @@ class GenerationRepositoryTest {
     }
 
     @Test
-    fun `ensureAdditionalModules no-op when empty`() = runTest {
-        val fake = FakeForgeService(serverModules = listOf("other.safetensors"))
+    fun `ensureAdditionalModules no-op when empty and server clean`() = runTest {
+        val fake = FakeForgeService(serverModules = emptyList())
         val result = repo(fake).ensureAdditionalModules(emptyList())
         assertTrue(result is Result.Success)
         assertTrue(fake.postedOptions.isEmpty())
+    }
+
+    @Test
+    fun `ensureAdditionalModules clears stale server modules when empty`() = runTest {
+        val fake = FakeForgeService(serverModules = listOf("ae.safetensors"))
+        val result = repo(fake).ensureAdditionalModules(emptyList())
+        assertTrue(result is Result.Success)
+        assertFalse(fake.postedOptions.isEmpty())
+        assertTrue(
+            fake.postedOptions.first()["forge_additional_modules"]?.jsonArray?.isEmpty() == true,
+        )
     }
 
     @Test

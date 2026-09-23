@@ -118,7 +118,8 @@ class GenerationWorker @AssistedInject constructor(
                     return abort(job, index, total, aligned.message)
                 else -> Unit
             }
-            // Neo VAE / Text Encoder pre-flight: no-op when the job carries no modules.
+            // Neo VAE / Text Encoder pre-flight: aligns the server-global to the
+            // job selection, clearing it when the job carries no modules.
             when (val aligned = generationRepository.ensureAdditionalModules(job.additionalModules)) {
                 is ForgeResult.Error ->
                     return abort(job, index, total, aligned.message)

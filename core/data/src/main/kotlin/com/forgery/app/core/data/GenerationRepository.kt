@@ -34,7 +34,10 @@ interface GenerationRepository {
     suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit>
     /**
      * Aligns the server-global `forge_additional_modules` (full model reload).
-     * No-op when empty. Basenames are resolved server-side via `modules_change`.
+     * An empty selection clears a stale server-global (VAE leak used to
+     * produce dark images after the picker was cleared or the mode was
+     * switched to FLUX/QWEN, whose payloads carry no modules key).
+     * Basenames are resolved server-side via `modules_change`.
      */
     suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit>
     suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>>
@@ -163,7 +166,9 @@ class DefaultGenerationRepository @Inject constructor(
     }
 
     override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> {
-        if (modules.isEmpty()) return Result.Success(Unit)
+        // No early-return on empty: an empty selection must clear a stale
+        // server-global instead of inheriting it (covers the cleared picker
+        // and FLUX/QWEN jobs following an SDXL+VAE batch).
         // Server stores full paths in options; compare normalized basenames, order-insensitive.
         val want = modules.map { normalizeModelTitle(it) }.sorted()
         return try {
