@@ -53,6 +53,9 @@ private class FakeForgeService(
     var progress: Double = 0.0,
     /** Raw body for POST /options: Neo answers `null` (set_config returns None). */
     var optionsBody: String = "{}",
+    var schedulers: List<JsonObject> = listOf(
+        buildJsonObject { put("name", "karras"); put("label", "Karras") },
+    ),
 ) : ForgeService {
     val postedOptions = mutableListOf<JsonObject>()
     var lastTxtBody: JsonObject? = null
@@ -77,6 +80,8 @@ private class FakeForgeService(
 
     override suspend fun upscalers(): List<JsonObject> =
         listOf(buildJsonObject { put("name", "Latent") })
+
+    override suspend fun schedulers(): List<JsonObject> = schedulers
     override suspend fun loras(): List<JsonObject> =
         listOf(buildJsonObject {
             put("name", "detail.safetensors")
@@ -231,6 +236,30 @@ class GenerationRepositoryTest {
     fun `fetchUpscalers extracts names`() = runTest {
         val result = repo(FakeForgeService()).fetchUpscalers()
         assertEquals(listOf("Latent"), (result as Result.Success).data)
+    }
+
+    @Test
+    fun `fetchSchedulers prefers label falls back to name drops blanks`() = runTest {
+        val fake = FakeForgeService(
+            schedulers = listOf(
+                buildJsonObject {
+                    put("name", "karras")
+                    put("label", "Karras")
+                },
+                // No label -> fallback to name.
+                buildJsonObject { put("name", "exponential") },
+                // Blank label + blank name -> dropped.
+                buildJsonObject {
+                    put("name", "")
+                    put("label", "")
+                },
+                // Missing both -> dropped.
+                buildJsonObject { put("need_inner_model", false) },
+            ),
+        )
+        val result = repo(fake).fetchSchedulers()
+        assertTrue(result is Result.Success)
+        assertEquals(listOf("Karras", "exponential"), (result as Result.Success).data)
     }
 
     @Test

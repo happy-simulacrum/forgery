@@ -27,6 +27,12 @@ Android app (Stable Diffusion client): Kotlin 2.0.21, AGP 8.7.3, compile/target 
 - JUnit4 + `kotlinx-coroutines-test` + Turbine. No mocking library — hand-write fakes (see `feature/generate/impl/src/test/.../GenerateViewModelTest.kt`) and drive ViewModels with `runTest` + `TestDispatcherRule`.
 - Room/Retrofit/Hilt all use KSP — after touching `@Entity`/`@Dao`/`@Module`/`@HiltViewModel`, expect generated code and prefer a module compile before running tests.
 
+## Forge Neo API doc
+
+- `docs/forge-neo-api.md` mirrors the server's sdapi (branch `neo`, endpoints ✅ used / ❌ unused, DTOs, schedulers table).
+- When wiring a previously-❌ endpoint (new `ForgeService` method / repository fetch): flip its status to ✅, add the caller + field mapping, and extend the DTO section if the shape is new.
+- When the server branch/commit moves: re-check `modules/api/api.py` (routes), `modules/api/models.py`, `modules/sd_schedulers.py` and update the doc header + affected sections.
+
 ## Stale skill docs — do not follow blindly
 
 - `.opencode/skills/bug-fix/SKILL.md` and `emulator/SKILL.md` reference `./deploy`, `./build_debug`, `./build_release`, and task `compileGooglePlayDebugKotlin`. **None exist**: no scripts in repo root, no product flavors (only `debug`/`release`; debug has `.debug` suffix). Use the `gradle` commands above; install manually: `adb -s emulator-5554 install -r <apk>`.

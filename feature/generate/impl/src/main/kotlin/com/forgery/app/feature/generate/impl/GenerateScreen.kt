@@ -8,12 +8,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -36,6 +42,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.designsystem.ForgeryTheme
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
@@ -169,19 +176,30 @@ private fun GenerateContent(
         }
 
         item {
+            LabelHeader(
+                text = "Prompt",
+                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.PROMPT)) },
+                onClear = { onAction(GenerateAction.ClearPrompt) },
+            )
             DraftTextField(
                 value = p.prompt,
                 onValueChange = { onAction(GenerateAction.PromptChanged(it)) },
-                label = "Prompt",
+                label = null,
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
+            )
+            LabelHeader(
+                text = "Negative prompt",
+                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.NEGATIVE)) },
+                onClear = { onAction(GenerateAction.ClearNegative) },
+                modifier = Modifier.padding(top = 8.dp),
             )
             DraftTextField(
                 value = p.negativePrompt,
                 onValueChange = { onAction(GenerateAction.NegChanged(it)) },
-                label = "Negative prompt",
+                label = null,
                 minLines = 2,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 
@@ -194,6 +212,7 @@ private fun GenerateContent(
                 error = state.modelsError,
                 onRefresh = { onAction(GenerateAction.RefreshModels) },
                 onSelect = { onAction(GenerateAction.ModelChanged(it)) },
+                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.MODEL)) },
             )
         }
 
@@ -219,20 +238,30 @@ private fun GenerateContent(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ForgeryDropdown(
-                            label = "Sampler",
-                            options = state.samplers.ifEmpty { listOf(p.sampler) },
-                            selected = p.sampler,
-                            onSelect = { onAction(GenerateAction.SamplerChanged(it)) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        ForgeryDropdown(
-                            label = "Scheduler",
-                            options = schedulerOptionsFor(p.mode),
-                            selected = p.scheduler,
-                            onSelect = { onAction(GenerateAction.SchedulerChanged(it)) },
-                            modifier = Modifier.weight(1f),
-                        )
+                        Column(Modifier.weight(1f)) {
+                            LabelHeader(
+                                text = "Sampler",
+                                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.SAMPLER)) },
+                            )
+                            ForgeryDropdown(
+                                label = "",
+                                options = state.samplers.ifEmpty { listOf(p.sampler) },
+                                selected = p.sampler,
+                                onSelect = { onAction(GenerateAction.SamplerChanged(it)) },
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            LabelHeader(
+                                text = "Scheduler",
+                                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.SCHEDULER)) },
+                            )
+                            ForgeryDropdown(
+                                label = "",
+                                options = schedulerOptions(state.serverSchedulers, p.mode, p.scheduler),
+                                selected = p.scheduler,
+                                onSelect = { onAction(GenerateAction.SchedulerChanged(it)) },
+                            )
+                        }
                     }
                     SliderRow("Steps", p.steps.toString(), p.steps.toFloat(), 1f..50f, 49,
                         parseManual = { parseStepsInput(it, 1f..50f)?.toFloat() },
@@ -335,17 +364,21 @@ private fun GenerateContent(
                     }
                     if (state.hr.enable) {
                         Spacer(Modifier.height(8.dp))
+                        LabelHeader(
+                            text = "Upscaler",
+                            onSave = { onAction(GenerateAction.SaveDefault(DefaultField.UPSCALER)) },
+                        )
                         if (state.upscalers.isEmpty()) {
                             DraftTextField(
                                 value = state.hr.upscaler,
                                 onValueChange = { onAction(GenerateAction.HrUpscalerChanged(it)) },
-                                label = "Upscaler",
+                                label = null,
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         } else {
                             ForgeryDropdown(
-                                label = "Upscaler",
+                                label = "",
                                 options = state.upscalers,
                                 selected = state.hr.upscaler,
                                 onSelect = { onAction(GenerateAction.HrUpscalerChanged(it)) },
@@ -473,18 +506,20 @@ private fun ModelPicker(
     error: String?,
     onRefresh: () -> Unit,
     onSelect: (String) -> Unit,
+    onSave: () -> Unit,
 ) {
     Column {
+        LabelHeader(text = label, onSave = onSave)
         if (options.isEmpty()) {
             OutlinedTextField(
                 value = selected,
                 onValueChange = onSelect,
-                label = { Text("$label (type manually)") },
+                label = { Text("Type manually") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         } else {
-            ForgeryDropdown(label, options, selected.ifBlank { options.first() }, onSelect)
+            ForgeryDropdown("", options, selected.ifBlank { options.first() }, onSelect)
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
         if (error != null) {
@@ -565,9 +600,58 @@ internal fun parseCfgInput(raw: String, range: ClosedFloatingPointRange<Float>):
     return v.coerceIn(range.start.toDouble(), range.endInclusive.toDouble())
 }
 
+/**
+ * Section label with save-as-default (diskette) and optional clear (trash)
+ * actions next to the text, at label scale — not inside the input field.
+ */
+@Composable
+private fun LabelHeader(
+    text: String,
+    onSave: () -> Unit,
+    modifier: Modifier = Modifier,
+    onClear: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.width(2.dp))
+        IconButton(onClick = onSave, modifier = Modifier.size(36.dp)) {
+            Icon(
+                Icons.Filled.Save,
+                contentDescription = "Save $text as default",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        if (onClear != null) {
+            IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Clear $text",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Scheduler dropdown options: full server list when available, curated
+ * per-mode fallback offline. The current value is always kept so a saved
+ * (or server-hidden) selection never silently disappears.
+ */
+internal fun schedulerOptions(
+    server: List<String>,
+    mode: GenerationMode,
+    current: String,
+): List<String> {
+    val base = server.ifEmpty { schedulerOptionsFor(mode) }
+    return if (current.isNotBlank() && current !in base) base + current else base
+}
+
 /** Scheduler options per mode — mirrors resolver neo.js defaults + index.html selects. */
-internal fun schedulerOptionsFor(mode: GenerationMode): List<String> = when (mode) {
-    GenerationMode.SDXL -> listOf("Karras", "Normal", "Simple", "Exponential")
+internal fun schedulerOptionsFor(mode: GenerationMode): List<String> = when (mode) {    GenerationMode.SDXL -> listOf("Karras", "Normal", "Simple", "Exponential")
     GenerationMode.FLUX -> listOf("Simple", "Beta", "Normal", "Karras")
     GenerationMode.QWEN -> listOf("Simple", "Normal")
 }

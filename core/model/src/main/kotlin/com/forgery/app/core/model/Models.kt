@@ -111,6 +111,18 @@ data class HrSettings(
     val cfg: Double = 1.0,
 )
 
+/** Saved GEN defaults per generation mode, applied on start/mode switch. */
+data class GenDefaults(
+    val prompt: String = "",
+    val negativePrompt: String = "",
+    val modelTitle: String = "",
+    val sampler: String = "",
+    val scheduler: String = "",
+    val upscaler: String = "",
+)
+
+enum class DefaultField { PROMPT, NEGATIVE, MODEL, SAMPLER, SCHEDULER, UPSCALER }
+
 data class QueueSnapshot(
     val running: Boolean,
     val currentIndex: Int,

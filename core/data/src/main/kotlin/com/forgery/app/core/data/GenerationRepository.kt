@@ -26,6 +26,8 @@ interface GenerationRepository {
     suspend fun fetchSdModels(): Result<List<String>>
     suspend fun fetchSamplers(): Result<List<String>>
     suspend fun fetchUpscalers(): Result<List<String>>
+    /** Forge Neo scheduler catalog (`GET /sdapi/v1/schedulers`, UI uses `label`). */
+    suspend fun fetchSchedulers(): Result<List<String>>
     /** Forge Neo VAE / Text Encoder catalog (`GET /sdapi/v1/sd-modules`, basenames). */
     suspend fun fetchModules(): Result<List<String>>
     suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>>
@@ -93,6 +95,10 @@ class DefaultGenerationRepository @Inject constructor(
 
     override suspend fun fetchUpscalers(): Result<List<String>> = call { api ->
         api.upscalers().map { it.stringField("name") }.filter { it.isNotBlank() }
+    }
+
+    override suspend fun fetchSchedulers(): Result<List<String>> = call { api ->
+        api.schedulers().map { it.stringField("label", "name") }.filter { it.isNotBlank() }
     }
 
     override suspend fun fetchModules(): Result<List<String>> = call { api ->

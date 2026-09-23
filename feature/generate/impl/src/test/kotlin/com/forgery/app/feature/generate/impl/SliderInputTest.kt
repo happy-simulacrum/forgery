@@ -1,5 +1,6 @@
 package com.forgery.app.feature.generate.impl
 
+import com.forgery.app.core.model.GenerationMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -53,5 +54,35 @@ class SliderInputTest {
         assertNull(parseCfgInput("", 0f..15f))
         assertNull(parseCfgInput("abc", 0f..15f))
         assertNull(parseCfgInput("7,5", 0f..15f))
+    }
+
+    @Test
+    fun `server schedulers win when available`() {
+        val server = listOf("Automatic", "Karras", "Beta")
+        assertEquals(server, schedulerOptions(server, GenerationMode.SDXL, "Karras"))
+    }
+
+    @Test
+    fun `empty server falls back to curated per-mode list`() {
+        assertEquals(
+            listOf("Karras", "Normal", "Simple", "Exponential"),
+            schedulerOptions(emptyList(), GenerationMode.SDXL, "Karras"),
+        )
+    }
+
+    @Test
+    fun `current value is kept when missing from options`() {
+        assertEquals(
+            listOf("Karras", "Normal", "Beta"),
+            schedulerOptions(listOf("Karras", "Normal"), GenerationMode.SDXL, "Beta"),
+        )
+    }
+
+    @Test
+    fun `blank current is not appended`() {
+        assertEquals(
+            listOf("Karras", "Normal"),
+            schedulerOptions(listOf("Karras", "Normal"), GenerationMode.SDXL, ""),
+        )
     }
 }
