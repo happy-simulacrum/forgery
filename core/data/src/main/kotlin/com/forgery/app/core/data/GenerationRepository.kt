@@ -9,7 +9,10 @@ import com.forgery.app.core.network.progressValue
 import com.forgery.app.core.network.stringField
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,10 +26,17 @@ interface GenerationRepository {
     suspend fun fetchSdModels(): Result<List<String>>
     suspend fun fetchSamplers(): Result<List<String>>
     suspend fun fetchUpscalers(): Result<List<String>>
+    /** Forge Neo VAE / Text Encoder catalog (`GET /sdapi/v1/sd-modules`, basenames). */
+    suspend fun fetchModules(): Result<List<String>>
     suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>>
     suspend fun fetchLoraSidecar(basePath: String): Result<com.forgery.app.core.model.LoraMeta>
     suspend fun fetchPromptStyles(): Result<List<com.forgery.app.core.model.StylePreset>>
     suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit>
+    /**
+     * Aligns the server-global `forge_additional_modules` (full model reload).
+     * No-op when empty. Basenames are resolved server-side via `modules_change`.
+     */
+    suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit>
     suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>>
     suspend fun img2img(payload: Map<String, Any?>): Result<List<String>>
     suspend fun progress(): Result<Double>
@@ -85,6 +95,10 @@ class DefaultGenerationRepository @Inject constructor(
         api.upscalers().map { it.stringField("name") }.filter { it.isNotBlank() }
     }
 
+    override suspend fun fetchModules(): Result<List<String>> = call { api ->
+        api.sdModules().map { it.stringField("model_name", "title") }.filter { it.isNotBlank() }
+    }
+
     override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
         call { api ->
             api.loras().map { o ->
@@ -118,8 +132,7 @@ class DefaultGenerationRepository @Inject constructor(
             }.filter { it.name.isNotBlank() }
         }
 
-    override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> {
-        if (title.isBlank()) return Result.Success(Unit)
+    override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> {        if (title.isBlank()) return Result.Success(Unit)
         return try {
             var attempts = 0
             while (attempts < GenerationRepository.MODEL_ALIGN_ATTEMPTS) {
@@ -137,7 +150,7 @@ class DefaultGenerationRepository @Inject constructor(
                         load["forge_additional_modules"] = emptyList<String>()
                         load["sd_vae"] = "None"
                     }
-                    val posted = call { it.setOptions(load.toJsonObject()) }
+                    val posted = call { it.setOptions(load.toJsonObject()).close() }
                     if (posted is Result.Error) return Result.Error(posted.message, posted.cause)
                 }
                 attempts++
@@ -149,9 +162,40 @@ class DefaultGenerationRepository @Inject constructor(
         }
     }
 
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> {
+        if (modules.isEmpty()) return Result.Success(Unit)
+        // Server stores full paths in options; compare normalized basenames, order-insensitive.
+        val want = modules.map { normalizeModelTitle(it) }.sorted()
+        return try {
+            var attempts = 0
+            while (attempts < GenerationRepository.MODEL_ALIGN_ATTEMPTS) {
+                val current = when (val opts = call { it.options() }) {
+                    is Result.Success -> opts.data.stringList("forge_additional_modules")
+                        .map { normalizeModelTitle(it) }.sorted()
+                    is Result.Error -> return Result.Error(opts.message, opts.cause)
+                    is Result.Loading -> emptyList()
+                }
+                if (current == want) {
+                    return Result.Success(Unit)
+                }
+                if (attempts % 5 == 0) {
+                    // Neo resolves basenames server-side (modules_change); post as selected.
+                    val posted = call {
+                        it.setOptions(mapOf("forge_additional_modules" to modules).toJsonObject()).close()
+                    }
+                    if (posted is Result.Error) return Result.Error(posted.message, posted.cause)
+                }
+                attempts++
+                delay(GenerationRepository.MODEL_ALIGN_DELAY_MS)
+            }
+            Result.Error("Timeout: server failed to load modules.")
+        } catch (e: Exception) {
+            Result.Error(e.message ?: e.toString(), e)
+        }
+    }
+
     override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
         call { api -> api.txt2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
-
     override suspend fun img2img(payload: Map<String, Any?>): Result<List<String>> =
         call { api -> api.img2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
 
@@ -166,3 +210,7 @@ class DefaultGenerationRepository @Inject constructor(
             is Result.Loading -> Result.Loading
         }
 }
+
+/** Reads a JSON string-array option (e.g. Neo `forge_additional_modules`); missing -> empty. */
+private fun JsonObject.stringList(key: String): List<String> =
+    this[key]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()

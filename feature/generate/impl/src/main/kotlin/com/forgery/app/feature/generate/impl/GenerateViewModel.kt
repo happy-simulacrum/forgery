@@ -7,6 +7,7 @@ import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.ConnectionRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.data.buildTxt2ImgPayload
@@ -38,22 +39,35 @@ class GenerateViewModel @Inject constructor(
     private val promptDrafts: PromptDraftRepository,
     private val connectionRepository: ConnectionRepository,
     private val hrSettings: HrSettingsRepository,
+    private val modulesSelection: ModulesSelectionRepository,
     private val handoff: AnalyzeHandoffRepository,
 ) : ViewModel() {
 
-    /** Non-text, non-HR params; prompt text + mode + HR live in repositories. */
+    /** Non-text, non-HR, non-modules params; prompt text + mode + HR + modules live in repositories. */
     private val rest = MutableStateFlow(defaultParamsFor(GenerationMode.SDXL))
+
+    private data class ModeData(
+        val mode: GenerationMode,
+        val prompt: String,
+        val negativePrompt: String,
+        val hr: HrSettings,
+        val modules: List<String>,
+    )
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val modeData = promptDrafts.observeActiveMode().flatMapLatest { mode ->
         combine(
             promptDrafts.observeDraft(mode),
             hrSettings.observeHr(mode),
-        ) { draft, hr -> Triple(mode, draft, hr) }
+            modulesSelection.observeModules(mode),
+        ) { draft, hr, modules ->
+            ModeData(mode, draft.prompt, draft.negativePrompt, hr, modules)
+        }
     }
 
     private data class ModelsState(
         val models: List<String> = emptyList(),
+        val modules: List<String> = emptyList(),
         val upscalers: List<String> = emptyList(),
         val loading: Boolean = false,
         val error: String? = null,
@@ -90,20 +104,21 @@ class GenerateViewModel @Inject constructor(
         samplers,
         misc
     ) { r, md, ms, s, mi ->
-        val (mode, draft, hr) = md
         GenerateUiState.Success(
             params = r.copy(
-                prompt = draft.prompt,
-                negativePrompt = draft.negativePrompt,
-                mode = mode,
-                enableHr = hr.enable,
-                hrUpscaler = hr.upscaler,
-                hrScale = hr.scale,
-                hrSteps = hr.steps,
-                hrDenoise = hr.denoise,
-                hrCfg = hr.cfg,
+                prompt = md.prompt,
+                negativePrompt = md.negativePrompt,
+                mode = md.mode,
+                enableHr = md.hr.enable,
+                hrUpscaler = md.hr.upscaler,
+                hrScale = md.hr.scale,
+                hrSteps = md.hr.steps,
+                hrDenoise = md.hr.denoise,
+                hrCfg = md.hr.cfg,
+                additionalModules = md.modules,
             ),
             models = ms.models,
+            modules = ms.modules,
             upscalers = ms.upscalers,
             modelsLoading = ms.loading,
             modelsError = ms.error,
@@ -112,7 +127,7 @@ class GenerateViewModel @Inject constructor(
             queueSnapshot = mi.snapshot,
             statusMessage = mi.status,
             engine = mi.engine,
-            hr = hr,
+            hr = md.hr,
             confirmUnload = mi.confirmUnload,
         )
     }.stateIn(
@@ -140,6 +155,13 @@ class GenerateViewModel @Inject constructor(
                 height = r.height ?: cur.height,
                 modelTitle = r.modelTitle ?: cur.modelTitle,
             )
+            r.additionalModules?.let { modules ->
+                viewModelScope.launch {
+                    // Handoff targets the active mode (Analyze restores into current mode).
+                    val mode = promptDrafts.observeActiveMode().first()
+                    modulesSelection.saveModules(mode, modules)
+                }
+            }
         }
     }
 
@@ -154,6 +176,9 @@ class GenerateViewModel @Inject constructor(
                 promptDrafts.setActiveMode(action.mode)
             }
             is GenerateAction.ModelChanged -> rest.value = rest.value.copy(modelTitle = action.value)
+            is GenerateAction.ModulesChanged -> viewModelScope.launch {
+                modulesSelection.saveModules(p.mode, action.value)
+            }
             is GenerateAction.SamplerChanged -> rest.value = rest.value.copy(sampler = action.value)
             is GenerateAction.SchedulerChanged -> rest.value = rest.value.copy(scheduler = action.value)
             is GenerateAction.StepsChanged -> rest.value = rest.value.copy(steps = action.value)
@@ -201,6 +226,7 @@ class GenerateViewModel @Inject constructor(
             if (!silent) engine.value = EngineState.Initializing
             modelsState.value = modelsState.value.copy(loading = true, error = null)
             val modelsResult = generationRepository.fetchSdModels()
+            val modulesResult = generationRepository.fetchModules()
             val samplersResult = generationRepository.fetchSamplers()
             val upscalersResult = generationRepository.fetchUpscalers()
             when (modelsResult) {
@@ -222,6 +248,15 @@ class GenerateViewModel @Inject constructor(
                 is Result.Loading -> Unit
             }
             if (samplersResult is Result.Success) samplers.value = samplersResult.data
+            if (modulesResult is Result.Success) {
+                modelsState.value = modelsState.value.copy(modules = modulesResult.data)
+                // Drop persisted selections the server no longer offers (renamed/deleted files).
+                val known = modulesResult.data.toSet()
+                val mode = promptDrafts.observeActiveMode().first()
+                val current = modulesSelection.observeModules(mode).first()
+                val pruned = current.filter { it in known }
+                if (pruned.size != current.size) modulesSelection.saveModules(mode, pruned)
+            }
             if (upscalersResult is Result.Success) {
                 modelsState.value = modelsState.value.copy(upscalers = upscalersResult.data)
             }
@@ -248,6 +283,7 @@ class GenerateViewModel @Inject constructor(
             mode = "txt",
             modelTitle = p.modelTitle,
             payloadJson = payloadToJsonString(payload),
+            additionalModules = p.additionalModules,
         )
     }
 
@@ -320,6 +356,7 @@ sealed interface GenerateAction {
     data class NegChanged(val value: String) : GenerateAction
     data class ModeChanged(val mode: GenerationMode) : GenerateAction
     data class ModelChanged(val value: String) : GenerateAction
+    data class ModulesChanged(val value: List<String>) : GenerateAction
     data class SamplerChanged(val value: String) : GenerateAction
     data class SchedulerChanged(val value: String) : GenerateAction
     data class StepsChanged(val value: Int) : GenerateAction

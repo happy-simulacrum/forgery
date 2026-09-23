@@ -5,6 +5,7 @@ import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.ConnectionRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.model.ConnectionConfig
@@ -47,6 +48,7 @@ private class FakeConnectionRepository(
 
 private class FakeGenerationRepository : GenerationRepository {
     var models = listOf("a.safetensors", "b.safetensors")
+    var modules = listOf("ae.safetensors", "clip_l.safetensors")
     var samplers = listOf("Euler", "DPM++ 2M")
     var modelsError: String? = null
     var modelsGate: CompletableDeferred<Unit>? = null
@@ -56,6 +58,7 @@ private class FakeGenerationRepository : GenerationRepository {
     }
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(samplers)
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(listOf("Latent"))
+    override suspend fun fetchModules(): Result<List<String>> = Result.Success(modules)
     override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
         Result.Success(emptyList())
     override suspend fun fetchLoraSidecar(basePath: String): Result<com.forgery.app.core.model.LoraMeta> =
@@ -63,6 +66,8 @@ private class FakeGenerationRepository : GenerationRepository {
     override suspend fun fetchPromptStyles(): Result<List<com.forgery.app.core.model.StylePreset>> =
         Result.Success(emptyList())
     override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> =
+        Result.Success(Unit)
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> =
         Result.Success(Unit)
     override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
         Result.Success(listOf("img"))
@@ -155,6 +160,23 @@ private class FakeHrSettingsRepository : HrSettingsRepository {
     fun current(mode: GenerationMode) = flowOf(mode).value
 }
 
+/** In-memory modules-selection fake: real repo doubles as fake (persisted semantics). */
+private class FakeModulesSelectionRepository : ModulesSelectionRepository {
+    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
+
+    private fun flowOf(mode: GenerationMode) =
+        stored.getOrPut(mode) { MutableStateFlow(emptyList()) }
+
+    override fun observeModules(mode: GenerationMode): Flow<List<String>> =
+        flowOf(mode).asStateFlow()
+
+    override suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
+        flowOf(mode).value = modules
+    }
+
+    fun current(mode: GenerationMode) = flowOf(mode).value
+}
+
 /** In-memory handoff fake: real repo doubles as fake (set/consume one-shot semantics). */
 private typealias FakeAnalyzeHandoff = AnalyzeHandoffRepository
 
@@ -170,7 +192,8 @@ class GenerateViewModelTest {
         gen: FakeGenerationRepository = FakeGenerationRepository(),
         configured: Boolean = false,
         handoff: AnalyzeHandoffRepository = FakeAnalyzeHandoff(),
-    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hrRepo, handoff)
+        selection: FakeModulesSelectionRepository = FakeModulesSelectionRepository(),
+    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hrRepo, selection, handoff)
 
     @Test
     fun `starts uninitialized without catalog when not configured`() = runTest {
@@ -236,6 +259,85 @@ class GenerateViewModelTest {
         } as GenerateUiState.Success
         assertEquals(listOf("a.safetensors", "b.safetensors"), state.models)
         assertEquals(listOf("Euler", "DPM++ 2M"), state.samplers)
+    }
+
+    @Test
+    fun `modules load on init when configured`() = runTest {
+        val vm = viewModel(configured = true)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.modules.isNotEmpty()
+        } as GenerateUiState.Success
+        assertEquals(listOf("ae.safetensors", "clip_l.safetensors"), state.modules)
+    }
+
+    @Test
+    fun `modules toggle updates params`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors")))
+        val selected = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.additionalModules == listOf("ae.safetensors")
+        } as GenerateUiState.Success
+        assertEquals(listOf("ae.safetensors"), selected.params.additionalModules)
+        vm.onAction(GenerateAction.ModulesChanged(emptyList()))
+        val cleared = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.additionalModules.isEmpty()
+        } as GenerateUiState.Success
+        assertTrue(cleared.params.additionalModules.isEmpty())
+    }
+
+    @Test
+    fun `generate payload carries forge_additional_modules`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged("a cat"))
+        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors", "clip_l.safetensors")))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.params.additionalModules.size == 2
+        }
+        vm.onAction(GenerateAction.Generate)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Started") == true
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals(listOf("ae.safetensors", "clip_l.safetensors"), job.additionalModules)
+        assertTrue(job.payloadJson.contains("forge_additional_modules"))
+        assertTrue(job.payloadJson.contains("ae.safetensors"))
+    }
+
+    @Test
+    fun `mode switch keeps per-mode module selection`() = runTest {
+        val selection = FakeModulesSelectionRepository()
+        val vm = viewModel(selection = selection)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors")))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.params.additionalModules.isNotEmpty()
+        }
+        assertEquals(listOf("ae.safetensors"), selection.current(GenerationMode.SDXL))
+        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
+        val flux = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
+        } as GenerateUiState.Success
+        assertTrue(flux.params.additionalModules.isEmpty())
+        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
+        val back = vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.mode == GenerationMode.SDXL && it.params.additionalModules.isNotEmpty()
+        } as GenerateUiState.Success
+        assertEquals(listOf("ae.safetensors"), back.params.additionalModules)
+    }
+
+    @Test
+    fun `handoff overlays additional modules`() = runTest {
+        val handoff = FakeAnalyzeHandoff()
+        handoff.set(RestoredParams(additionalModules = listOf("ae.safetensors")))
+        val vm = viewModel(handoff = handoff)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success
+        } as GenerateUiState.Success
+        assertEquals(listOf("ae.safetensors"), state.params.additionalModules)
     }
 
     @Test

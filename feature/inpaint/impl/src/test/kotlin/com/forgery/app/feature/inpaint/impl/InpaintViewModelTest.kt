@@ -3,7 +3,9 @@ package com.forgery.app.feature.inpaint.impl
 import androidx.lifecycle.SavedStateHandle
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
+import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.QueueRepository
+import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.QueueSnapshot
@@ -31,6 +33,7 @@ private class FakeGenerationRepository(
     override suspend fun fetchSdModels(): Result<List<String>> = Result.Success(models)
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(listOf("Euler"))
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(listOf("Latent"))
+    override suspend fun fetchModules(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
         Result.Success(emptyList())
     override suspend fun fetchLoraSidecar(basePath: String): Result<com.forgery.app.core.model.LoraMeta> =
@@ -38,6 +41,8 @@ private class FakeGenerationRepository(
     override suspend fun fetchPromptStyles(): Result<List<com.forgery.app.core.model.StylePreset>> =
         Result.Success(emptyList())
     override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> =
+        Result.Success(Unit)
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> =
         Result.Success(Unit)
     override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
         Result.Success(listOf("img"))
@@ -67,6 +72,20 @@ private class FakeQueueRepository : QueueRepository {
     override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean = true
 }
 
+private class FakeModulesSelectionRepository : ModulesSelectionRepository {
+    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
+
+    private fun flowOf(mode: GenerationMode) =
+        stored.getOrPut(mode) { MutableStateFlow(emptyList()) }
+
+    override fun observeModules(mode: GenerationMode): Flow<List<String>> =
+        flowOf(mode).asStateFlow()
+
+    override suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
+        flowOf(mode).value = modules
+    }
+}
+
 class InpaintViewModelTest {
 
     @get:Rule
@@ -76,7 +95,8 @@ class InpaintViewModelTest {
     private fun viewModel(
         reader: ImageAttachmentReader = FakeImageReader(),
         savedStateHandle: SavedStateHandle = SavedStateHandle(),
-    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue)
+        selection: ModulesSelectionRepository = FakeModulesSelectionRepository(),
+    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection)
 
     private suspend fun StateFlow<InpaintUiState>.success(): InpaintUiState.Success =
         first { it is InpaintUiState.Success } as InpaintUiState.Success
@@ -161,8 +181,7 @@ class InpaintViewModelTest {
     }
 
     @Test
-    fun `enqueue while running reports behind current job`() = runTest {
-        queue.snapshot.value =
+    fun `enqueue while running reports behind current job`() = runTest {        queue.snapshot.value =
             QueueSnapshot(running = true, currentIndex = 0, total = 1, origin = "q", stopReason = null)
         val vm = viewModel()
         vm.uiState.first { it is InpaintUiState.Success && it.queueRunning }
@@ -176,5 +195,26 @@ class InpaintViewModelTest {
         assertEquals(1, queue.immediate.size)
         assertEquals("single", queue.immediate.first().second)
         assertTrue(state.queueRunning)
+    }
+
+    @Test
+    fun `enqueue carries shared module selection`() = runTest {
+        val selection = FakeModulesSelectionRepository()
+        selection.saveModules(GenerationMode.SDXL, listOf("ae.safetensors"))
+        val vm = viewModel(selection = selection)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.modules == listOf("ae.safetensors")
+        }
+        vm.onAction(InpaintAction.PickResult("content://img/1"))
+        vm.uiState.first { it is InpaintUiState.Success && it.source != null }
+        vm.onAction(InpaintAction.PromptChanged("a cat"))
+        vm.onAction(InpaintAction.Generate)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals(listOf("ae.safetensors"), job.additionalModules)
+        assertTrue(job.payloadJson.contains("forge_additional_modules"))
     }
 }

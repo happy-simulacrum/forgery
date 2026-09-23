@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
+import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.data.buildImg2ImgPayload
 import com.forgery.app.core.data.payloadToJsonString
@@ -38,6 +39,7 @@ class InpaintViewModel @Inject constructor(
     private val imageReader: ImageAttachmentReader,
     private val generationRepository: GenerationRepository,
     private val queueRepository: QueueRepository,
+    private val modulesSelection: ModulesSelectionRepository,
 ) : ViewModel() {
 
     companion object {
@@ -73,6 +75,12 @@ class InpaintViewModel @Inject constructor(
             statusMessage = status,
             queueRunning = queueRunning,
         )
+    }.combine(modulesSelection.observeModules(GenerationMode.SDXL)) { state, modules ->
+        when (state) {
+            InpaintUiState.Loading -> state
+            is InpaintUiState.Success -> state.copy(modules = modules)
+            is InpaintUiState.Error -> state
+        }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -232,6 +240,7 @@ class InpaintViewModel @Inject constructor(
                     modelTitle = e.modelTitle,
                     sampler = e.sampler,
                     scheduler = e.scheduler,
+                    additionalModules = modulesSelection.observeModules(GenerationMode.SDXL).first(),
                 )
                 val payload = buildImg2ImgPayload(
                     params = params,
@@ -246,6 +255,7 @@ class InpaintViewModel @Inject constructor(
                     mode = "inp",
                     modelTitle = e.modelTitle,
                     payloadJson = payloadToJsonString(payload),
+                    additionalModules = params.additionalModules,
                 )
                 val wasRunning = queueRepository.observeSnapshot().first()?.running == true
                 queueRepository.enqueueImmediate(listOf(job), origin = "single")

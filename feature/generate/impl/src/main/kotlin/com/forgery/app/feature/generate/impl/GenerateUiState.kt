@@ -10,6 +10,7 @@ sealed interface GenerateUiState {
     data class Success(
         val params: GenerationParams = GenerationParams(),
         val models: List<String> = emptyList(),
+        val modules: List<String> = emptyList(),
         val upscalers: List<String> = emptyList(),
         val modelsLoading: Boolean = false,
         val modelsError: String? = null,

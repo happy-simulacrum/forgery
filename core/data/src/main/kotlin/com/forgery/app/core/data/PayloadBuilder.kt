@@ -22,7 +22,8 @@ private val JsonLenient = kotlinx.serialization.json.Json { ignoreUnknownKeys = 
  * NOT stripped here — [com.forgery.app.core.network.ForgeApiFactory.sanitized]
  * applies the sanitizer right before POST.
  * Mirrors resolver engine.js: `distilled_cfg_scale` is written for FLUX only
- * (SDXL/QWEN must not carry the key).
+ * (SDXL/QWEN must not carry the key). Neo `forge_additional_modules`
+ * (VAE / Text Encoder) is written for SDXL only, when selected.
  */
 fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
     val payload = mutableMapOf<String, Any?>(
@@ -55,6 +56,12 @@ fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
     payload["override_settings"] = mutableMapOf<String, Any?>(
         "sd_model_checkpoint" to params.modelTitle,
     )
+    if (params.mode == GenerationMode.SDXL && params.additionalModules.isNotEmpty()) {
+        @Suppress("UNCHECKED_CAST")
+        (payload["override_settings"] as MutableMap<String, Any?>)[
+            "forge_additional_modules"
+        ] = params.additionalModules
+    }
     return payload
 }
 

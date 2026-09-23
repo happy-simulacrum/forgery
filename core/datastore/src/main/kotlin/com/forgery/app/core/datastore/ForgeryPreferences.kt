@@ -71,6 +71,9 @@ object PrefsKeys {
     val HR_CFG_XL = doublePreferencesKey("bojro_xl_hr_cfg")
     val HR_CFG_FLUX = doublePreferencesKey("bojro_flux_hr_cfg")
     val HR_CFG_QWEN = doublePreferencesKey("bojro_qwen_hr_cfg")
+    val MODULES_XL = stringSetPreferencesKey("bojro_xl_modules")
+    val MODULES_FLUX = stringSetPreferencesKey("bojro_flux_modules")
+    val MODULES_QWEN = stringSetPreferencesKey("bojro_qwen_modules")
 }
 
 @Singleton
@@ -259,5 +262,21 @@ class ForgeryPreferencesDataSource @Inject constructor(
             val current = e[PrefsKeys.LORA_FAVS] ?: emptySet()
             e[PrefsKeys.LORA_FAVS] = if (favorite) current + name else current - name
         }
+    }
+
+    // -- VAE / Text Encoder selection per mode (Forge Neo forge_additional_modules) --
+
+    private fun modulesKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.MODULES_XL
+        GenerationMode.FLUX -> PrefsKeys.MODULES_FLUX
+        GenerationMode.QWEN -> PrefsKeys.MODULES_QWEN
+    }
+
+    /** Sorted for UI/selection stability (DataStore sets are unordered). */
+    fun observeModules(mode: GenerationMode): Flow<List<String>> =
+        dataStore.data.map { p -> (p[modulesKey(mode)] ?: emptySet()).sorted() }
+
+    suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
+        dataStore.edit { e -> e[modulesKey(mode)] = modules.toSet() }
     }
 }

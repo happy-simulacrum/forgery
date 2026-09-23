@@ -12,6 +12,7 @@ fun NavGraphBuilder.generateScreen(
     onNavigateToStyles: (GenerationMode) -> Unit,
     onNavigateToMagic: (GenerationMode) -> Unit,
     onNavigateToPower: () -> Unit,
+    onNavigateToModules: (GenerationMode) -> Unit,
 ) {
     composable<GenerateRoute> {
         GenerateRoute(
@@ -20,6 +21,7 @@ fun NavGraphBuilder.generateScreen(
             onNavigateToStyles = onNavigateToStyles,
             onNavigateToMagic = onNavigateToMagic,
             onNavigateToPower = onNavigateToPower,
+            onNavigateToModules = onNavigateToModules,
         )
     }
 }

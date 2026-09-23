@@ -31,12 +31,15 @@ private class FakeGenerationRepository : GenerationRepository {
     override suspend fun fetchSdModels(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(emptyList())
+    override suspend fun fetchModules(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchLoras(): Result<List<LoraItem>> = Result.Success(loras)
     override suspend fun fetchLoraSidecar(basePath: String): Result<LoraMeta> =
         Result.Success(sidecar)
     override suspend fun fetchPromptStyles(): Result<List<StylePreset>> =
         Result.Success(emptyList())
     override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> =
+        Result.Success(Unit)
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> =
         Result.Success(Unit)
     override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
         Result.Success(emptyList())

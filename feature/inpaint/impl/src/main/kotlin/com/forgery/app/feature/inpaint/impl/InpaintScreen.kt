@@ -54,6 +54,7 @@ import com.forgery.app.core.ui.LoadingState
 @Composable
 internal fun InpaintRoute(
     onBackClick: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: InpaintViewModel = hiltViewModel(),
 ) {
@@ -70,6 +71,7 @@ internal fun InpaintRoute(
         onAction = viewModel::onAction,
         onPickImage = { picker.launch("image/*") },
         onBackClick = onBackClick,
+        onNavigateToModules = onNavigateToModules,
         modifier = modifier,
     )
 }
@@ -81,6 +83,7 @@ internal fun InpaintScreen(
     onAction: (InpaintAction) -> Unit,
     onPickImage: () -> Unit,
     onBackClick: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -91,6 +94,7 @@ internal fun InpaintScreen(
             activeStroke = activeStroke,
             onAction = onAction,
             onPickImage = onPickImage,
+            onNavigateToModules = onNavigateToModules,
             modifier = modifier,
         )
     }
@@ -102,6 +106,7 @@ private fun InpaintContent(
     activeStroke: MaskStroke?,
     onAction: (InpaintAction) -> Unit,
     onPickImage: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -199,6 +204,15 @@ private fun InpaintContent(
                 }
                 if (state.modelsLoading) {
                     LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
+                }
+                OutlinedButton(
+                    onClick = onNavigateToModules,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                ) {
+                    Text(
+                        "VAE / TEXT ENCODER" +
+                            (if (state.modules.isEmpty()) "" else " (${state.modules.size})"),
+                    )
                 }
             }
 
@@ -421,6 +435,7 @@ private fun InpaintScreenPreview() {
             onAction = {},
             onPickImage = {},
             onBackClick = {},
+            onNavigateToModules = {},
         )
     }
 }

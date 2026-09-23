@@ -16,11 +16,15 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -44,14 +48,29 @@ private class FakeConnectionRepo : ConnectionRepository {
 
 private class FakeForgeService(
     var checkpoint: String = "model.safetensors",
+    var serverModules: List<String> = emptyList(),
     var images: List<String> = listOf("aGVsbG8="),
     var progress: Double = 0.0,
+    /** Raw body for POST /options: Neo answers `null` (set_config returns None). */
+    var optionsBody: String = "{}",
 ) : ForgeService {
     val postedOptions = mutableListOf<JsonObject>()
     var lastTxtBody: JsonObject? = null
 
     override suspend fun sdModels(): List<JsonObject> =
         listOf(buildJsonObject { put("model_name", "model.safetensors") })
+
+    override suspend fun sdModules(): List<JsonObject> =
+        listOf(
+            buildJsonObject {
+                put("model_name", "ae.safetensors")
+                put("filename", "/models/VAE/ae.safetensors")
+            },
+            buildJsonObject {
+                put("model_name", "clip_l.safetensors")
+                put("filename", "/models/text_encoder/clip_l.safetensors")
+            },
+        )
 
     override suspend fun samplers(): List<JsonObject> =
         listOf(buildJsonObject { put("name", "Euler") })
@@ -79,12 +98,18 @@ private class FakeForgeService(
         })
 
     override suspend fun options(): JsonObject =
-        buildJsonObject { put("sd_model_checkpoint", checkpoint) }
+        buildJsonObject {
+            put("sd_model_checkpoint", checkpoint)
+            putJsonArray("forge_additional_modules") { serverModules.forEach { add(it) } }
+        }
 
-    override suspend fun setOptions(body: JsonObject): JsonObject {
+    override suspend fun setOptions(body: JsonObject): ResponseBody {
         postedOptions += body
         body["sd_model_checkpoint"]?.jsonPrimitive?.contentOrNull?.let { checkpoint = it }
-        return buildJsonObject {}
+        body["forge_additional_modules"]?.jsonArray?.let { arr ->
+            serverModules = arr.map { it.jsonPrimitive.content }
+        }
+        return optionsBody.toResponseBody("application/json".toMediaType())
     }
 
     override suspend fun progress(): JsonObject =
@@ -122,6 +147,78 @@ class GenerationRepositoryTest {
         val result = repo(FakeForgeService()).fetchSdModels()
         assertTrue(result is Result.Success)
         assertEquals(listOf("model.safetensors"), (result as Result.Success).data)
+    }
+
+    @Test
+    fun `fetchModules extracts basenames`() = runTest {
+        val result = repo(FakeForgeService()).fetchModules()
+        assertTrue(result is Result.Success)
+        assertEquals(
+            listOf("ae.safetensors", "clip_l.safetensors"),
+            (result as Result.Success).data,
+        )
+    }
+
+    @Test
+    fun `ensureAdditionalModules no-op when empty`() = runTest {
+        val fake = FakeForgeService(serverModules = listOf("other.safetensors"))
+        val result = repo(fake).ensureAdditionalModules(emptyList())
+        assertTrue(result is Result.Success)
+        assertTrue(fake.postedOptions.isEmpty())
+    }
+
+    @Test
+    fun `ensureAdditionalModules no-op when already aligned`() = runTest {
+        val fake = FakeForgeService(
+            serverModules = listOf("/models/VAE/ae.safetensors"),
+        )
+        val result = repo(fake).ensureAdditionalModules(listOf("ae.safetensors"))
+        assertTrue(result is Result.Success)
+        assertTrue(fake.postedOptions.isEmpty())
+    }
+
+    @Test
+    fun `ensureAdditionalModules loads modules when mismatched`() = runTest {
+        val fake = FakeForgeService(serverModules = emptyList())
+        val result = repo(fake).ensureAdditionalModules(
+            listOf("clip_l.safetensors", "ae.safetensors"),
+        )
+        assertTrue(result is Result.Success)
+        assertFalse(fake.postedOptions.isEmpty())
+        // Posted as selected (basenames); fake server applies them, order-insensitive compare.
+        assertEquals(
+            listOf("clip_l.safetensors", "ae.safetensors"),
+            fake.postedOptions.first()["forge_additional_modules"]?.jsonArray
+                ?.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun `ensureAdditionalModules compares order-insensitively`() = runTest {
+        val fake = FakeForgeService(
+            serverModules = listOf("ae.safetensors", "clip_l.safetensors"),
+        )
+        val result = repo(fake).ensureAdditionalModules(
+            listOf("clip_l.safetensors", "ae.safetensors"),
+        )
+        assertTrue(result is Result.Success)
+        assertTrue(fake.postedOptions.isEmpty())
+    }
+
+    @Test
+    fun `ensureModel tolerates null options body`() = runTest {
+        // Real Neo/A1111 set_config returns None -> body `null`, not `{}`.
+        val fake = FakeForgeService(checkpoint = "other.safetensors", optionsBody = "null")
+        val result = repo(fake).ensureModel("model.safetensors", false)
+        assertTrue(result is Result.Success)
+    }
+
+    @Test
+    fun `ensureAdditionalModules tolerates null options body`() = runTest {
+        val fake = FakeForgeService(serverModules = emptyList(), optionsBody = "null")
+        val result = repo(fake).ensureAdditionalModules(listOf("ae.safetensors"))
+        assertTrue(result is Result.Success)
+        assertFalse(fake.postedOptions.isEmpty())
     }
 
     @Test
@@ -173,6 +270,25 @@ class GenerationRepositoryTest {
         val overrides = fake.lastTxtBody?.get("override_settings")?.jsonObject
         assertFalse(overrides?.containsKey("forge_inference_memory") == true)
         assertEquals("None", overrides?.get("sd_vae")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `txt2img keeps forge_additional_modules`() = runTest {
+        val fake = FakeForgeService()
+        val payload = mapOf<String, Any?>(
+            "prompt" to "x",
+            "override_settings" to mapOf(
+                "sd_model_checkpoint" to "m",
+                "forge_additional_modules" to listOf("ae.safetensors"),
+            ),
+        )
+        val result = repo(fake).txt2img(payload)
+        assertTrue(result is Result.Success)
+        val overrides = fake.lastTxtBody?.get("override_settings")?.jsonObject
+        assertEquals(
+            listOf("ae.safetensors"),
+            overrides?.get("forge_additional_modules")?.jsonArray?.map { it.jsonPrimitive.content },
+        )
     }
 
     @Test

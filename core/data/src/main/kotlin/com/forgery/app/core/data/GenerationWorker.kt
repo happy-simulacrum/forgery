@@ -118,6 +118,12 @@ class GenerationWorker @AssistedInject constructor(
                     return abort(job, index, total, aligned.message)
                 else -> Unit
             }
+            // Neo VAE / Text Encoder pre-flight: no-op when the job carries no modules.
+            when (val aligned = generationRepository.ensureAdditionalModules(job.additionalModules)) {
+                is ForgeResult.Error ->
+                    return abort(job, index, total, aligned.message)
+                else -> Unit
+            }
 
             val payload = jsonStringToPayload(job.payloadJson)
             // Progress poller, best-effort (legacy: 3s interval thread).

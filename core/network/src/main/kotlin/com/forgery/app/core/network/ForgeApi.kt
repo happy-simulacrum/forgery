@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
@@ -31,6 +32,13 @@ interface ForgeService {
     @GET("sdapi/v1/sd-models")
     suspend fun sdModels(): List<JsonObject>
 
+    /**
+     * Forge Neo combined VAE / Text Encoder catalog (models/VAE + models/text_encoder).
+     * Items carry `model_name` (basename, e.g. `ae.safetensors`) + `filename` (full server path).
+     */
+    @GET("sdapi/v1/sd-modules")
+    suspend fun sdModules(): List<JsonObject>
+
     @GET("sdapi/v1/samplers")
     suspend fun samplers(): List<JsonObject>
 
@@ -43,8 +51,12 @@ interface ForgeService {
     @GET("sdapi/v1/options")
     suspend fun options(): JsonObject
 
+    /**
+     * Neo/A1111 `set_config` returns `None` (body `null`), not a JSON object —
+     * hence raw [ResponseBody] (closed by callers) instead of [JsonObject].
+     */
     @POST("sdapi/v1/options")
-    suspend fun setOptions(@Body body: JsonObject): JsonObject
+    suspend fun setOptions(@Body body: JsonObject): ResponseBody
 
     @GET("sdapi/v1/progress")
     suspend fun progress(): JsonObject

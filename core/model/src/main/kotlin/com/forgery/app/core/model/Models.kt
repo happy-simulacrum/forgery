@@ -53,6 +53,8 @@ data class GenerationParams(
     val batchSize: Int = 1,
     val batchCount: Int = 1,
     val modelTitle: String = "",
+    /** Selected VAE / Text Encoder modules (Forge Neo `forge_additional_modules`, SDXL only). */
+    val additionalModules: List<String> = emptyList(),
     val enableHr: Boolean = false,
     val hrUpscaler: String = "Latent",
     val hrScale: Double = 1.5,
@@ -76,6 +78,8 @@ data class QueueJob(
     val mode: String,
     val modelTitle: String,
     val payloadJson: String,
+    /** Frozen VAE / Text Encoder selection (Forge Neo `forge_additional_modules`). */
+    val additionalModules: List<String> = emptyList(),
 )
 
 @Serializable
@@ -151,5 +155,6 @@ data class RestoredParams(
     val width: Int? = null,
     val height: Int? = null,
     val modelTitle: String? = null,
+    val additionalModules: List<String>? = null,
     val hr: HrSettings? = null,
 )

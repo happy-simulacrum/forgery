@@ -97,4 +97,51 @@ class PayloadBuilderTest {
         val p = buildTxt2ImgPayload(base.copy(mode = GenerationMode.FLUX, distilledCfgScale = 5.0))
         assertEquals(5.0, p["distilled_cfg_scale"])
     }
+
+    @Test
+    fun `sdxl modules land in override_settings`() {
+        val p = buildTxt2ImgPayload(base.copy(additionalModules = listOf("ae.safetensors")))
+        @Suppress("UNCHECKED_CAST")
+        val overrides = p["override_settings"] as Map<String, Any?>
+        assertEquals(listOf("ae.safetensors"), overrides["forge_additional_modules"])
+    }
+
+    @Test
+    fun `modules omitted when empty`() {
+        @Suppress("UNCHECKED_CAST")
+        val overrides = buildTxt2ImgPayload(base)["override_settings"] as Map<String, Any?>
+        assertFalse(overrides.containsKey("forge_additional_modules"))
+    }
+
+    @Test
+    fun `modules omitted outside sdxl`() {
+        val p = buildTxt2ImgPayload(
+            base.copy(mode = GenerationMode.FLUX, additionalModules = listOf("ae.safetensors")),
+        )
+        @Suppress("UNCHECKED_CAST")
+        val overrides = p["override_settings"] as Map<String, Any?>
+        assertFalse(overrides.containsKey("forge_additional_modules"))
+    }
+
+    @Test
+    fun `img2img inherits modules override`() {
+        val p = buildImg2ImgPayload(
+            base.copy(additionalModules = listOf("ae.safetensors")),
+            listOf("AAA"),
+        )
+        @Suppress("UNCHECKED_CAST")
+        val overrides = p["override_settings"] as Map<String, Any?>
+        assertEquals(listOf("ae.safetensors"), overrides["forge_additional_modules"])
+    }
+
+    @Test
+    fun `json round trip preserves modules`() {
+        val json = payloadToJsonString(
+            buildTxt2ImgPayload(base.copy(additionalModules = listOf("ae.safetensors"))),
+        )
+        val back = jsonStringToPayload(json)
+        @Suppress("UNCHECKED_CAST")
+        val overrides = back["override_settings"] as Map<String, Any?>
+        assertEquals(listOf("ae.safetensors"), overrides["forge_additional_modules"])
+    }
 }

@@ -13,7 +13,8 @@ dependencies {
     api(projects.core.common)
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.kotlinx.serialization)
-    implementation(libs.okhttp.core)
+    // api: okhttp3.ResponseBody is part of ForgeService.setOptions signature.
+    api(libs.okhttp.core)
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

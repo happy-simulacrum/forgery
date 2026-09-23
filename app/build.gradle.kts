@@ -41,6 +41,7 @@ dependencies {
     implementation(projects.feature.queue.impl)
     implementation(projects.feature.gallery.impl)
     implementation(projects.feature.lora.impl)
+    implementation(projects.feature.modules.impl)
     implementation(projects.feature.styles.impl)
     implementation(projects.feature.magicprompt.impl)
     implementation(projects.feature.settings.impl)

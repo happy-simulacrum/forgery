@@ -28,6 +28,8 @@ sealed interface InpaintUiState {
         val models: List<String> = emptyList(),
         val modelsLoading: Boolean = false,
         val modelsError: String? = null,
+        /** Selected VAE / Text Encoder modules (shared persisted selection, SDXL). */
+        val modules: List<String> = emptyList(),
         val steps: Int = 20,
         val cfgScale: Double = 7.0,
         val denoise: Double = 0.75,

@@ -135,4 +135,22 @@ class ConverterRegressionTest {
         val chat = LlmService::class.java.methods.first { it.name == "chat" }
         assertEquals(JsonObject::class.java, chat.parameterTypes[1])
     }
+
+    @Test
+    fun `setOptions tolerates null body like Neo`() = runTest {
+        // Live bug: Neo/A1111 set_config returns None -> body `null`; decoding it
+        // as JsonObject threw "Unexpected JSON token" on model+modules switch.
+        // setOptions returns raw ResponseBody so the converter never touches it.
+        val server = Loopback("null")
+        try {
+            val svc = retrofit(server.port).create(ForgeService::class.java)
+            svc.setOptions(
+                buildJsonObject { put("sd_model_checkpoint", "m.safetensors") },
+            ).close()
+            server.stop()
+            assertTrue(server.received.get().contains("sd_model_checkpoint"))
+        } finally {
+            server.stop()
+        }
+    }
 }

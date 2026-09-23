@@ -55,6 +55,7 @@ internal fun GenerateRoute(
     onNavigateToStyles: (GenerationMode) -> Unit,
     onNavigateToMagic: (GenerationMode) -> Unit,
     onNavigateToPower: () -> Unit,
+    onNavigateToModules: (GenerationMode) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: GenerateViewModel = hiltViewModel(),
 ) {
@@ -68,6 +69,7 @@ internal fun GenerateRoute(
         onNavigateToStyles = onNavigateToStyles,
         onNavigateToMagic = onNavigateToMagic,
         onNavigateToPower = onNavigateToPower,
+        onNavigateToModules = onNavigateToModules,
         modifier = modifier,
     )
 }
@@ -81,6 +83,7 @@ internal fun GenerateScreen(
     onNavigateToStyles: (GenerationMode) -> Unit,
     onNavigateToMagic: (GenerationMode) -> Unit,
     onNavigateToPower: () -> Unit,
+    onNavigateToModules: (GenerationMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -94,6 +97,7 @@ internal fun GenerateScreen(
             onNavigateToStyles = onNavigateToStyles,
             onNavigateToMagic = onNavigateToMagic,
             onNavigateToPower = onNavigateToPower,
+            onNavigateToModules = onNavigateToModules,
             modifier = modifier,
         )
     }
@@ -108,6 +112,7 @@ private fun GenerateContent(
     onNavigateToStyles: (GenerationMode) -> Unit,
     onNavigateToMagic: (GenerationMode) -> Unit,
     onNavigateToPower: () -> Unit,
+    onNavigateToModules: (GenerationMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val p = state.params
@@ -190,6 +195,21 @@ private fun GenerateContent(
                 onRefresh = { onAction(GenerateAction.RefreshModels) },
                 onSelect = { onAction(GenerateAction.ModelChanged(it)) },
             )
+        }
+
+        // Forge Neo "VAE / Text Encoder": separate menu, SDXL only.
+        if (p.mode == GenerationMode.SDXL) {
+            item {
+                OutlinedButton(
+                    onClick = { onNavigateToModules(p.mode) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "VAE / TEXT ENCODER" +
+                            (if (p.additionalModules.isEmpty()) "" else " (${p.additionalModules.size})"),
+                    )
+                }
+            }
         }
 
         item {
@@ -605,6 +625,7 @@ private fun GenerateScreenPreview() {
             onNavigateToStyles = {},
             onNavigateToMagic = {},
             onNavigateToPower = {},
+            onNavigateToModules = {},
         )
     }
 }
