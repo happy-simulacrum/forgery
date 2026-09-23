@@ -9,6 +9,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.forgery.app.core.model.ConnectionConfig
+import com.forgery.app.core.model.DefaultField
+import com.forgery.app.core.model.GenDefaults
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.PromptDraft
@@ -74,6 +76,24 @@ object PrefsKeys {
     val MODULES_XL = stringSetPreferencesKey("bojro_xl_modules")
     val MODULES_FLUX = stringSetPreferencesKey("bojro_flux_modules")
     val MODULES_QWEN = stringSetPreferencesKey("bojro_qwen_modules")
+    val DEF_PROMPT_XL = stringPreferencesKey("bojro_def_prompt_xl")
+    val DEF_PROMPT_FLUX = stringPreferencesKey("bojro_def_prompt_flux")
+    val DEF_PROMPT_QWEN = stringPreferencesKey("bojro_def_prompt_qwen")
+    val DEF_NEG_XL = stringPreferencesKey("bojro_def_neg_xl")
+    val DEF_NEG_FLUX = stringPreferencesKey("bojro_def_neg_flux")
+    val DEF_NEG_QWEN = stringPreferencesKey("bojro_def_neg_qwen")
+    val DEF_MODEL_XL = stringPreferencesKey("bojro_def_model_xl")
+    val DEF_MODEL_FLUX = stringPreferencesKey("bojro_def_model_flux")
+    val DEF_MODEL_QWEN = stringPreferencesKey("bojro_def_model_qwen")
+    val DEF_SAMPLER_XL = stringPreferencesKey("bojro_def_sampler_xl")
+    val DEF_SAMPLER_FLUX = stringPreferencesKey("bojro_def_sampler_flux")
+    val DEF_SAMPLER_QWEN = stringPreferencesKey("bojro_def_sampler_qwen")
+    val DEF_SCHED_XL = stringPreferencesKey("bojro_def_sched_xl")
+    val DEF_SCHED_FLUX = stringPreferencesKey("bojro_def_sched_flux")
+    val DEF_SCHED_QWEN = stringPreferencesKey("bojro_def_sched_qwen")
+    val DEF_UPSCALER_XL = stringPreferencesKey("bojro_def_upscaler_xl")
+    val DEF_UPSCALER_FLUX = stringPreferencesKey("bojro_def_upscaler_flux")
+    val DEF_UPSCALER_QWEN = stringPreferencesKey("bojro_def_upscaler_qwen")
 }
 
 @Singleton
@@ -254,6 +274,70 @@ class ForgeryPreferencesDataSource @Inject constructor(
             e[hrStepsKey(mode)] = hr.steps
             e[hrDenoiseKey(mode)] = hr.denoise
             e[hrCfgKey(mode)] = hr.cfg
+        }
+    }
+
+    // -- GEN defaults per mode (saved user values applied on start/mode switch) --
+
+    private fun defaultsPromptKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_PROMPT_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_PROMPT_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_PROMPT_QWEN
+    }
+
+    private fun defaultsNegKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_NEG_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_NEG_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_NEG_QWEN
+    }
+
+    private fun defaultsModelKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_MODEL_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_MODEL_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_MODEL_QWEN
+    }
+
+    private fun defaultsSamplerKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_SAMPLER_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_SAMPLER_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_SAMPLER_QWEN
+    }
+
+    private fun defaultsSchedKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_SCHED_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_SCHED_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_SCHED_QWEN
+    }
+
+    private fun defaultsUpscalerKey(mode: GenerationMode) = when (mode) {
+        GenerationMode.SDXL -> PrefsKeys.DEF_UPSCALER_XL
+        GenerationMode.FLUX -> PrefsKeys.DEF_UPSCALER_FLUX
+        GenerationMode.QWEN -> PrefsKeys.DEF_UPSCALER_QWEN
+    }
+
+    private fun defaultsKey(mode: GenerationMode, field: DefaultField) = when (field) {
+        DefaultField.PROMPT -> defaultsPromptKey(mode)
+        DefaultField.NEGATIVE -> defaultsNegKey(mode)
+        DefaultField.MODEL -> defaultsModelKey(mode)
+        DefaultField.SAMPLER -> defaultsSamplerKey(mode)
+        DefaultField.SCHEDULER -> defaultsSchedKey(mode)
+        DefaultField.UPSCALER -> defaultsUpscalerKey(mode)
+    }
+
+    fun observeDefaults(mode: GenerationMode): Flow<GenDefaults> = dataStore.data.map { p ->
+        GenDefaults(
+            prompt = p[defaultsPromptKey(mode)].orEmpty(),
+            negativePrompt = p[defaultsNegKey(mode)].orEmpty(),
+            modelTitle = p[defaultsModelKey(mode)].orEmpty(),
+            sampler = p[defaultsSamplerKey(mode)].orEmpty(),
+            scheduler = p[defaultsSchedKey(mode)].orEmpty(),
+            upscaler = p[defaultsUpscalerKey(mode)].orEmpty(),
+        )
+    }
+
+    suspend fun saveDefault(mode: GenerationMode, field: DefaultField, value: String) {
+        dataStore.edit { e ->
+            e[defaultsKey(mode, field)] = value
         }
     }
 

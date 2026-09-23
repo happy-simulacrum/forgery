@@ -22,6 +22,7 @@ private class FakeGenerationRepository(
 ) : GenerationRepository {
     override suspend fun fetchSdModels(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(emptyList())
+    override suspend fun fetchSchedulers(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchModules(): Result<List<String>> =
         modulesError?.let { Result.Error(it) } ?: Result.Success(modules)

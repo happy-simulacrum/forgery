@@ -45,6 +45,9 @@ interface ForgeService {
     @GET("sdapi/v1/upscalers")
     suspend fun upscalers(): List<JsonObject>
 
+    @GET("sdapi/v1/schedulers")
+    suspend fun schedulers(): List<JsonObject>
+
     @GET("sdapi/v1/loras")
     suspend fun loras(): List<JsonObject>
 

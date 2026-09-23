@@ -3,11 +3,14 @@ package com.forgery.app.feature.generate.impl
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.ConnectionRepository
+import com.forgery.app.core.data.DefaultsRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
+import com.forgery.app.core.model.DefaultField
+import com.forgery.app.core.model.GenDefaults
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.HrSettings
@@ -50,6 +53,7 @@ private class FakeGenerationRepository : GenerationRepository {
     var models = listOf("a.safetensors", "b.safetensors")
     var modules = listOf("ae.safetensors", "clip_l.safetensors")
     var samplers = listOf("Euler", "DPM++ 2M")
+    var schedulers = listOf("Karras", "Normal")
     var modelsError: String? = null
     var modelsGate: CompletableDeferred<Unit>? = null
     override suspend fun fetchSdModels(): Result<List<String>> {
@@ -57,6 +61,7 @@ private class FakeGenerationRepository : GenerationRepository {
         return modelsError?.let { Result.Error(it) } ?: Result.Success(models)
     }
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(samplers)
+    override suspend fun fetchSchedulers(): Result<List<String>> = Result.Success(schedulers)
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(listOf("Latent"))
     override suspend fun fetchModules(): Result<List<String>> = Result.Success(modules)
     override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
@@ -177,6 +182,34 @@ private class FakeModulesSelectionRepository : ModulesSelectionRepository {
     fun current(mode: GenerationMode) = flowOf(mode).value
 }
 
+/** In-memory defaults fake: real repo doubles as fake (persisted semantics). */
+private class FakeDefaultsRepository : DefaultsRepository {
+    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<GenDefaults>>()
+
+    private fun flowOf(mode: GenerationMode) =
+        stored.getOrPut(mode) { MutableStateFlow(GenDefaults()) }
+
+    override fun observeDefaults(mode: GenerationMode): Flow<GenDefaults> =
+        flowOf(mode).asStateFlow()
+
+    override suspend fun saveDefault(mode: GenerationMode, field: DefaultField, value: String) {
+        val cur = flowOf(mode).value
+        flowOf(mode).value = when (field) {
+            DefaultField.PROMPT -> cur.copy(prompt = value)
+            DefaultField.NEGATIVE -> cur.copy(negativePrompt = value)
+            DefaultField.MODEL -> cur.copy(modelTitle = value)
+            DefaultField.SAMPLER -> cur.copy(sampler = value)
+            DefaultField.SCHEDULER -> cur.copy(scheduler = value)
+            DefaultField.UPSCALER -> cur.copy(upscaler = value)
+        }
+    }
+
+    fun current(mode: GenerationMode) = flowOf(mode).value
+    fun seed(mode: GenerationMode, defaults: GenDefaults) {
+        flowOf(mode).value = defaults
+    }
+}
+
 /** In-memory handoff fake: real repo doubles as fake (set/consume one-shot semantics). */
 private typealias FakeAnalyzeHandoff = AnalyzeHandoffRepository
 
@@ -193,7 +226,10 @@ class GenerateViewModelTest {
         configured: Boolean = false,
         handoff: AnalyzeHandoffRepository = FakeAnalyzeHandoff(),
         selection: FakeModulesSelectionRepository = FakeModulesSelectionRepository(),
-    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hrRepo, selection, handoff)
+        drafts: FakePromptDraftRepository = this.drafts,
+        hr: FakeHrSettingsRepository = hrRepo,
+        defaults: FakeDefaultsRepository = FakeDefaultsRepository(),
+    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hr, selection, defaults, handoff)
 
     @Test
     fun `starts uninitialized without catalog when not configured`() = runTest {
@@ -679,5 +715,145 @@ class GenerateViewModelTest {
         val state = vm.uiState.value as GenerateUiState.Success
         assertFalse(state.confirmUnload)
         assertEquals(0, gen.unloads)
+    }
+
+    @Test
+    fun `init applies saved model sampler scheduler defaults`() = runTest {
+        val defaults = FakeDefaultsRepository()
+        defaults.seed(
+            GenerationMode.SDXL,
+            GenDefaults(modelTitle = "m.safetensors", sampler = "DPM++ 2M", scheduler = "Beta"),
+        )
+        val vm = viewModel(defaults = defaults)
+        val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals("m.safetensors", state.params.modelTitle)
+        assertEquals("DPM++ 2M", state.params.sampler)
+        assertEquals("Beta", state.params.scheduler)
+    }
+
+    @Test
+    fun `init fills blank draft from default prompt`() = runTest {
+        val d = FakePromptDraftRepository()
+        d.setPrompt(GenerationMode.SDXL, "", "")
+        val defaults = FakeDefaultsRepository()
+        defaults.seed(
+            GenerationMode.SDXL,
+            GenDefaults(prompt = "def pos", negativePrompt = "def neg"),
+        )
+        val vm = viewModel(drafts = d, defaults = defaults)
+        val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals("def pos", state.params.prompt)
+        assertEquals("def neg", state.params.negativePrompt)
+    }
+
+    @Test
+    fun `init preserves typed draft over default prompt`() = runTest {
+        val d = FakePromptDraftRepository()
+        d.setPrompt(GenerationMode.SDXL, "typed", "n")
+        val defaults = FakeDefaultsRepository()
+        defaults.seed(
+            GenerationMode.SDXL,
+            GenDefaults(prompt = "def pos", negativePrompt = "def neg"),
+        )
+        val vm = viewModel(drafts = d, defaults = defaults)
+        val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals("typed", state.params.prompt)
+        assertEquals("n", state.params.negativePrompt)
+    }
+
+    @Test
+    fun `upscaler default applies while hr untouched, explicit pick wins`() = runTest {
+        val hr = FakeHrSettingsRepository()
+        val defaults = FakeDefaultsRepository()
+        defaults.seed(GenerationMode.SDXL, GenDefaults(upscaler = "ESRGAN"))
+        var vm = viewModel(hr = hr, defaults = defaults)
+        var state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals("ESRGAN", state.hr.upscaler)
+
+        val hr2 = FakeHrSettingsRepository()
+        hr2.saveHr(GenerationMode.SDXL, HrSettings(upscaler = "SwinIR"))
+        vm = viewModel(hr = hr2, defaults = defaults)
+        state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals("SwinIR", state.hr.upscaler)
+    }
+
+    @Test
+    fun `clear prompt keeps negative`() = runTest {
+        val d = FakePromptDraftRepository()
+        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        val vm = viewModel(drafts = d)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ClearPrompt)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage == "Prompt cleared."
+        } as GenerateUiState.Success
+        assertEquals("", state.params.prompt)
+        assertEquals("neg", state.params.negativePrompt)
+    }
+
+    @Test
+    fun `clear negative keeps prompt`() = runTest {
+        val d = FakePromptDraftRepository()
+        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        val vm = viewModel(drafts = d)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ClearNegative)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage == "Negative prompt cleared."
+        } as GenerateUiState.Success
+        assertEquals("pos", state.params.prompt)
+        assertEquals("", state.params.negativePrompt)
+    }
+
+    @Test
+    fun `save default persists current values`() = runTest {
+        val d = FakePromptDraftRepository()
+        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        val defaults = FakeDefaultsRepository()
+        val vm = viewModel(drafts = d, defaults = defaults)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModelChanged("m.safetensors"))
+        vm.onAction(GenerateAction.SamplerChanged("DPM++ 2M"))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.PROMPT))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.NEGATIVE))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.MODEL))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.SAMPLER))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.SCHEDULER))
+        vm.onAction(GenerateAction.SaveDefault(DefaultField.UPSCALER))
+        val saved = defaults.current(GenerationMode.SDXL)
+        assertEquals("pos", saved.prompt)
+        assertEquals("neg", saved.negativePrompt)
+        assertEquals("m.safetensors", saved.modelTitle)
+        assertEquals("DPM++ 2M", saved.sampler)
+        assertEquals("Karras", saved.scheduler)
+        assertEquals("Latent", saved.upscaler)
+    }
+
+    @Test
+    fun `mode switch loads new mode defaults`() = runTest {
+        val defaults = FakeDefaultsRepository()
+        defaults.seed(
+            GenerationMode.FLUX,
+            GenDefaults(modelTitle = "flux.safetensors", scheduler = "Simple"),
+        )
+        val vm = viewModel(defaults = defaults)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
+        } as GenerateUiState.Success
+        assertEquals("flux.safetensors", state.params.modelTitle)
+        assertEquals("Simple", state.params.scheduler)
+    }
+
+    @Test
+    fun `server schedulers surface in ui state`() = runTest {
+        val gen = FakeGenerationRepository()
+        gen.schedulers = listOf("Automatic", "Beta")
+        val vm = viewModel(gen, configured = true)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.engine is EngineState.Initialized
+        } as GenerateUiState.Success
+        assertEquals(listOf("Automatic", "Beta"), state.serverSchedulers)
     }
 }

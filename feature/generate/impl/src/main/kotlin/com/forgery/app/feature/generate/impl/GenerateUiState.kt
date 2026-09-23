@@ -15,6 +15,7 @@ sealed interface GenerateUiState {
         val modelsLoading: Boolean = false,
         val modelsError: String? = null,
         val samplers: List<String> = emptyList(),
+        val serverSchedulers: List<String> = emptyList(),
         val queueRunning: Boolean = false,
         val queueSnapshot: QueueSnapshot? = null,
         val statusMessage: String? = null,

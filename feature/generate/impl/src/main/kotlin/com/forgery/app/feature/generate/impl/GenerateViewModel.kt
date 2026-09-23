@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.ConnectionRepository
+import com.forgery.app.core.data.DefaultsRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
@@ -13,6 +14,7 @@ import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.data.buildTxt2ImgPayload
 import com.forgery.app.core.data.payloadToJsonString
 import com.forgery.app.core.model.GenerationMode
+import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenerationParams
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.QueueJob
@@ -40,6 +42,7 @@ class GenerateViewModel @Inject constructor(
     private val connectionRepository: ConnectionRepository,
     private val hrSettings: HrSettingsRepository,
     private val modulesSelection: ModulesSelectionRepository,
+    private val defaults: DefaultsRepository,
     private val handoff: AnalyzeHandoffRepository,
 ) : ViewModel() {
 
@@ -75,6 +78,14 @@ class GenerateViewModel @Inject constructor(
 
     private val modelsState = MutableStateFlow(ModelsState())
     private val samplers = MutableStateFlow<List<String>>(emptyList())
+    private val serverSchedulers = MutableStateFlow<List<String>>(emptyList())
+
+    private data class CatalogLists(
+        val samplers: List<String> = emptyList(),
+        val schedulers: List<String> = emptyList(),
+    )
+
+    private val catalog = combine(samplers, serverSchedulers, ::CatalogLists)
 
     private data class Misc(
         val status: String? = null,
@@ -101,9 +112,9 @@ class GenerateViewModel @Inject constructor(
         rest,
         modeData,
         modelsState,
-        samplers,
+        catalog,
         misc
-    ) { r, md, ms, s, mi ->
+    ) { r, md, ms, c, mi ->
         GenerateUiState.Success(
             params = r.copy(
                 prompt = md.prompt,
@@ -122,7 +133,8 @@ class GenerateViewModel @Inject constructor(
             upscalers = ms.upscalers,
             modelsLoading = ms.loading,
             modelsError = ms.error,
-            samplers = s,
+            samplers = c.samplers,
+            serverSchedulers = c.schedulers,
             queueRunning = mi.queueRunning,
             queueSnapshot = mi.snapshot,
             statusMessage = mi.status,
@@ -142,26 +154,58 @@ class GenerateViewModel @Inject constructor(
             val config = connectionRepository.observe().first()
             if (config.isConfigured) initializeEngine(silent = true)
         }
-        handoff.consume()?.let { r ->
-            val cur = rest.value
-            rest.value = cur.copy(
-                steps = r.steps ?: cur.steps,
-                sampler = r.sampler ?: cur.sampler,
-                scheduler = r.scheduler ?: cur.scheduler,
-                cfgScale = r.cfgScale ?: cur.cfgScale,
-                distilledCfgScale = r.distilledCfgScale ?: cur.distilledCfgScale,
-                seed = r.seed ?: cur.seed,
-                width = r.width ?: cur.width,
-                height = r.height ?: cur.height,
-                modelTitle = r.modelTitle ?: cur.modelTitle,
-            )
-            r.additionalModules?.let { modules ->
-                viewModelScope.launch {
+        viewModelScope.launch {
+            // Saved defaults first, Analyze handoff wins when present.
+            applyDefaultsFor(promptDrafts.observeActiveMode().first())
+            handoff.consume()?.let { r ->
+                val cur = rest.value
+                rest.value = cur.copy(
+                    steps = r.steps ?: cur.steps,
+                    sampler = r.sampler ?: cur.sampler,
+                    scheduler = r.scheduler ?: cur.scheduler,
+                    cfgScale = r.cfgScale ?: cur.cfgScale,
+                    distilledCfgScale = r.distilledCfgScale ?: cur.distilledCfgScale,
+                    seed = r.seed ?: cur.seed,
+                    width = r.width ?: cur.width,
+                    height = r.height ?: cur.height,
+                    modelTitle = r.modelTitle ?: cur.modelTitle,
+                )
+                r.additionalModules?.let { modules ->
                     // Handoff targets the active mode (Analyze restores into current mode).
                     val mode = promptDrafts.observeActiveMode().first()
                     modulesSelection.saveModules(mode, modules)
                 }
             }
+        }
+    }
+
+    /**
+     * Saved user defaults over the hardcoded [defaultParamsFor]: non-blank
+     * stored values win for model/sampler/scheduler; blank drafts are filled
+     * from stored prompts; the upscaler default applies while HR still holds
+     * the stock value (explicit user picks persist live and are kept).
+     */
+    private suspend fun applyDefaultsFor(mode: GenerationMode) {
+        val base = defaultParamsFor(mode)
+        val d = defaults.observeDefaults(mode).first()
+        rest.value = base.copy(
+            modelTitle = d.modelTitle.ifBlank { base.modelTitle },
+            sampler = d.sampler.ifBlank { base.sampler },
+            scheduler = d.scheduler.ifBlank { base.scheduler },
+        )
+        val draft = promptDrafts.observeDraft(mode).first()
+        if ((draft.prompt.isBlank() && d.prompt.isNotBlank()) ||
+            (draft.negativePrompt.isBlank() && d.negativePrompt.isNotBlank())
+        ) {
+            promptDrafts.setPrompt(
+                mode,
+                draft.prompt.ifBlank { d.prompt },
+                draft.negativePrompt.ifBlank { d.negativePrompt },
+            )
+        }
+        val hr = hrSettings.observeHr(mode).first()
+        if (hr.upscaler == HrSettings().upscaler && d.upscaler.isNotBlank()) {
+            hrSettings.saveHr(mode, hr.copy(upscaler = d.upscaler))
         }
     }
 
@@ -172,8 +216,30 @@ class GenerateViewModel @Inject constructor(
             is GenerateAction.PromptChanged -> update { setPrompt(p.mode, action.value, p.negativePrompt) }
             is GenerateAction.NegChanged -> update { setPrompt(p.mode, p.prompt, action.value) }
             is GenerateAction.ModeChanged -> viewModelScope.launch {
-                rest.value = defaultParamsFor(action.mode)
+                applyDefaultsFor(action.mode)
                 promptDrafts.setActiveMode(action.mode)
+            }
+            GenerateAction.ClearPrompt -> viewModelScope.launch {
+                val draft = promptDrafts.observeDraft(p.mode).first()
+                promptDrafts.setPrompt(p.mode, "", draft.negativePrompt)
+                statusMessage.value = "Prompt cleared."
+            }
+            GenerateAction.ClearNegative -> viewModelScope.launch {
+                val draft = promptDrafts.observeDraft(p.mode).first()
+                promptDrafts.setPrompt(p.mode, draft.prompt, "")
+                statusMessage.value = "Negative prompt cleared."
+            }
+            is GenerateAction.SaveDefault -> viewModelScope.launch {
+                val value = when (action.field) {
+                    DefaultField.PROMPT -> promptDrafts.observeDraft(p.mode).first().prompt
+                    DefaultField.NEGATIVE -> promptDrafts.observeDraft(p.mode).first().negativePrompt
+                    DefaultField.MODEL -> rest.value.modelTitle
+                    DefaultField.SAMPLER -> rest.value.sampler
+                    DefaultField.SCHEDULER -> rest.value.scheduler
+                    DefaultField.UPSCALER -> current.hr.upscaler
+                }
+                defaults.saveDefault(p.mode, action.field, value)
+                statusMessage.value = "Saved as default."
             }
             is GenerateAction.ModelChanged -> rest.value = rest.value.copy(modelTitle = action.value)
             is GenerateAction.ModulesChanged -> viewModelScope.launch {
@@ -228,6 +294,7 @@ class GenerateViewModel @Inject constructor(
             val modelsResult = generationRepository.fetchSdModels()
             val modulesResult = generationRepository.fetchModules()
             val samplersResult = generationRepository.fetchSamplers()
+            val schedulersResult = generationRepository.fetchSchedulers()
             val upscalersResult = generationRepository.fetchUpscalers()
             when (modelsResult) {
                 is Result.Success -> {
@@ -248,6 +315,7 @@ class GenerateViewModel @Inject constructor(
                 is Result.Loading -> Unit
             }
             if (samplersResult is Result.Success) samplers.value = samplersResult.data
+            if (schedulersResult is Result.Success) serverSchedulers.value = schedulersResult.data
             if (modulesResult is Result.Success) {
                 modelsState.value = modelsState.value.copy(modules = modulesResult.data)
                 // Drop persisted selections the server no longer offers (renamed/deleted files).
@@ -354,6 +422,9 @@ class GenerateViewModel @Inject constructor(
 sealed interface GenerateAction {
     data class PromptChanged(val value: String) : GenerateAction
     data class NegChanged(val value: String) : GenerateAction
+    data object ClearPrompt : GenerateAction
+    data object ClearNegative : GenerateAction
+    data class SaveDefault(val field: DefaultField) : GenerateAction
     data class ModeChanged(val mode: GenerationMode) : GenerateAction
     data class ModelChanged(val value: String) : GenerateAction
     data class ModulesChanged(val value: List<String>) : GenerateAction

@@ -32,6 +32,7 @@ private class FakeGenerationRepository(
 ) : GenerationRepository {
     override suspend fun fetchSdModels(): Result<List<String>> = Result.Success(models)
     override suspend fun fetchSamplers(): Result<List<String>> = Result.Success(listOf("Euler"))
+    override suspend fun fetchSchedulers(): Result<List<String>> = Result.Success(listOf("Karras"))
     override suspend fun fetchUpscalers(): Result<List<String>> = Result.Success(listOf("Latent"))
     override suspend fun fetchModules(): Result<List<String>> = Result.Success(emptyList())
     override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
