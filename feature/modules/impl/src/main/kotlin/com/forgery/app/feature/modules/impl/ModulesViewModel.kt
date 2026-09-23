@@ -3,6 +3,7 @@ package com.forgery.app.feature.modules.impl
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.navigation.toRoute
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
@@ -34,7 +35,7 @@ class ModulesViewModel @Inject constructor(
         savedStateHandle.toRoute<ModulesRoute>().mode?.let { GenerationMode.valueOf(it) }
     }.getOrNull() ?: GenerationMode.SDXL
 
-    private val query = MutableStateFlow("")
+    private val query = MutableStateFlow(TextFieldValue(""))
     private val catalog = MutableStateFlow<List<String>>(emptyList())
     private val listLoading = MutableStateFlow(false)
     private val listError = MutableStateFlow<String?>(null)
@@ -46,7 +47,8 @@ class ModulesViewModel @Inject constructor(
         listError,
         modulesSelection.observeModules(mode),
     ) { q, cat, loading, error, selected ->
-        val items = if (q.isBlank()) cat else cat.filter { it.contains(q, ignoreCase = true) }
+        val raw = q.text
+        val items = if (raw.isBlank()) cat else cat.filter { it.contains(raw, ignoreCase = true) }
         ModulesUiState.Success(
             mode = mode,
             query = q,
@@ -107,7 +109,8 @@ class ModulesViewModel @Inject constructor(
 }
 
 sealed interface ModulesAction {
-    data class QueryChanged(val value: String) : ModulesAction
+    /** Raw search keystroke (local VM state, no repo). */
+    data class QueryChanged(val value: TextFieldValue) : ModulesAction
     data class Toggle(val name: String) : ModulesAction
     data object Clear : ModulesAction
     data object Refresh : ModulesAction

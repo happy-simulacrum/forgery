@@ -9,6 +9,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
@@ -101,13 +102,13 @@ class InpaintViewModel @Inject constructor(
         when (action) {
             is InpaintAction.PickResult -> attachSource(action.uri)
             InpaintAction.ClearSource -> editor.value = e.copy(source = null, strokes = emptyList())
-            is InpaintAction.PromptChanged -> editor.value = e.copy(prompt = action.value)
-            is InpaintAction.NegChanged -> editor.value = e.copy(negativePrompt = action.value)
-            is InpaintAction.ModelChanged -> editor.value = e.copy(modelTitle = action.value)
-            is InpaintAction.StepsChanged -> editor.value = e.copy(steps = action.value)
-            is InpaintAction.CfgChanged -> editor.value = e.copy(cfgScale = action.value)
-            is InpaintAction.DenoiseChanged -> editor.value = e.copy(denoise = action.value)
-            is InpaintAction.MaskBlurChanged -> editor.value = e.copy(maskBlur = action.value)
+            is InpaintAction.PromptChanged -> editor.value = e.copy(promptDraft = action.value)
+            is InpaintAction.NegChanged -> editor.value = e.copy(negativeDraft = action.value)
+            is InpaintAction.ModelChanged -> editor.value = e.copy(modelDraft = action.value)
+            is InpaintAction.StepsChanged -> editor.value = e.copy(stepsDraft = action.value)
+            is InpaintAction.CfgChanged -> editor.value = e.copy(cfgDraft = action.value)
+            is InpaintAction.DenoiseChanged -> editor.value = e.copy(denoiseDraft = action.value)
+            is InpaintAction.MaskBlurChanged -> editor.value = e.copy(maskBlurDraft = action.value)
             is InpaintAction.SamplerChanged -> editor.value = e.copy(sampler = action.value)
             is InpaintAction.SchedulerChanged -> editor.value = e.copy(scheduler = action.value)
             is InpaintAction.BrushChanged -> editor.value = e.copy(brush = action.value)
@@ -137,13 +138,36 @@ class InpaintViewModel @Inject constructor(
             }
             InpaintAction.ClearMask -> editor.value = e.copy(strokes = emptyList())
             InpaintAction.RefreshModels -> refreshModels()
-            InpaintAction.Generate -> enqueue()
+            InpaintAction.CommitInputs -> commitInputs()
+            InpaintAction.Generate -> {
+                commitInputs()
+                enqueue()
+            }
             InpaintAction.DismissStatus -> statusMessage.value = null
         }
     }
 
     /** Committed strokes + the in-progress one, for the canvas overlay. */
     val activeStrokeFlow: StateFlow<MaskStroke?> = activeStroke
+
+    /**
+     * Synchronously commits raw drafts to domain values. Text commits verbatim;
+     * numerics parse (digits/decimal, clamped to the field range) and invalid
+     * raw keeps the previous domain value so mid-typing text survives.
+     * Runs on focus loss ([InpaintAction.CommitInputs]) and before enqueue.
+     */
+    private fun commitInputs() {
+        val e = editor.value
+        editor.value = e.copy(
+            prompt = e.promptDraft.text,
+            negativePrompt = e.negativeDraft.text,
+            modelTitle = e.modelDraft.text,
+            steps = parseIntDraft(e.stepsDraft.text, STEPS_RANGE) ?: e.steps,
+            cfgScale = parseDecimalDraft(e.cfgDraft.text, CFG_RANGE) ?: e.cfgScale,
+            denoise = parseDecimalDraft(e.denoiseDraft.text, DENOISE_RANGE) ?: e.denoise,
+            maskBlur = parseIntDraft(e.maskBlurDraft.text, MASK_BLUR_RANGE) ?: e.maskBlur,
+        )
+    }
 
     private fun attachSource(uri: String) {
         viewModelScope.launch {
@@ -274,13 +298,20 @@ class InpaintViewModel @Inject constructor(
 sealed interface InpaintAction {
     data class PickResult(val uri: String) : InpaintAction
     data object ClearSource : InpaintAction
-    data class PromptChanged(val value: String) : InpaintAction
-    data class NegChanged(val value: String) : InpaintAction
-    data class ModelChanged(val value: String) : InpaintAction
-    data class StepsChanged(val value: Int) : InpaintAction
-    data class CfgChanged(val value: Double) : InpaintAction
-    data class DenoiseChanged(val value: Double) : InpaintAction
-    data class MaskBlurChanged(val value: Int) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class PromptChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class NegChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class ModelChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class StepsChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class CfgChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class DenoiseChanged(val value: TextFieldValue) : InpaintAction
+    /** Raw keystroke; domain commit happens in [InpaintViewModel.commitInputs]. */
+    data class MaskBlurChanged(val value: TextFieldValue) : InpaintAction
     data class SamplerChanged(val value: String) : InpaintAction
     data class SchedulerChanged(val value: String) : InpaintAction
     data class BrushChanged(val value: Float) : InpaintAction
@@ -291,6 +322,36 @@ sealed interface InpaintAction {
     data object UndoStroke : InpaintAction
     data object ClearMask : InpaintAction
     data object RefreshModels : InpaintAction
+    /** Focus-loss / Done trigger: synchronously commit raw drafts to domain. */
+    data object CommitInputs : InpaintAction
     data object Generate : InpaintAction
     data object DismissStatus : InpaintAction
+}
+
+/** Field ranges mirror the InpaintScreen numeric inputs. */
+private val STEPS_RANGE = 1..50
+private val CFG_RANGE = 0.0..15.0
+private val DENOISE_RANGE = 0.0..1.0
+private val MASK_BLUR_RANGE = 0..64
+
+/**
+ * Commits raw integer text: digits only, empty/unparseable commits nothing
+ * (null) so the raw text survives; parsed values clamp to [range].
+ */
+internal fun parseIntDraft(raw: String, range: IntRange): Int? {
+    val digits = raw.filter(Char::isDigit)
+    if (digits.isEmpty()) return null
+    val parsed = digits.toIntOrNull() ?: return null
+    return parsed.coerceIn(range.first, range.last)
+}
+
+/**
+ * Commits raw decimal text: digits + single dot, empty/unparseable commits
+ * nothing (null); parsed values clamp to [range].
+ */
+internal fun parseDecimalDraft(raw: String, range: ClosedFloatingPointRange<Double>): Double? {
+    val clean = raw.filter { it.isDigit() || it == '.' }
+    if (clean.count { it == '.' } > 1) return null
+    val parsed = clean.toDoubleOrNull() ?: return null
+    return parsed.coerceIn(range.start, range.endInclusive)
 }

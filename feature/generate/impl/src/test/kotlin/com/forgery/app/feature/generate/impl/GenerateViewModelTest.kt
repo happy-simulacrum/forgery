@@ -1,5 +1,7 @@
 package com.forgery.app.feature.generate.impl
 
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.ConnectionRepository
@@ -326,7 +328,7 @@ class GenerateViewModelTest {
     fun `generate payload carries forge_additional_modules`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("a cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors", "clip_l.safetensors")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.additionalModules.size == 2
@@ -380,7 +382,7 @@ class GenerateViewModelTest {
     fun `mode switch applies presets and keeps per-mode drafts`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("cat")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.prompt == "cat"
         }
@@ -403,7 +405,7 @@ class GenerateViewModelTest {
     fun `generate executes immediately with payload`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("a cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(GenerateAction.ModelChanged("a.safetensors"))
         vm.onAction(GenerateAction.Generate)
         val state = vm.uiState.first {
@@ -423,7 +425,7 @@ class GenerateViewModelTest {
     fun `queue stages without starting`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("a cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(GenerateAction.StageQueue)
         val state = vm.uiState.first {
             it is GenerateUiState.Success && it.statusMessage?.startsWith("Staged") == true
@@ -439,7 +441,7 @@ class GenerateViewModelTest {
     fun `generate while running enqueues behind current job`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("first cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("first cat")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.prompt == "first cat"
         }
@@ -450,7 +452,7 @@ class GenerateViewModelTest {
         vm.uiState.first {
             it is GenerateUiState.Success && it.queueRunning
         }
-        vm.onAction(GenerateAction.PromptChanged("second cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("second cat")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.prompt == "second cat"
         }
@@ -467,7 +469,7 @@ class GenerateViewModelTest {
     fun `stage while running appends to end of queue`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("first cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("first cat")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.prompt == "first cat"
         }
@@ -475,7 +477,7 @@ class GenerateViewModelTest {
         vm.uiState.first {
             it is GenerateUiState.Success && it.queueRunning
         }
-        vm.onAction(GenerateAction.PromptChanged("second cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("second cat")))
         vm.uiState.first {
             it is GenerateUiState.Success && it.params.prompt == "second cat"
         }
@@ -555,10 +557,11 @@ class GenerateViewModelTest {
     fun `hr fields flow into enqueue payload`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged("a cat"))
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(GenerateAction.HrToggled)
-        vm.onAction(GenerateAction.HrScaleChanged(2.0))
-        vm.onAction(GenerateAction.HrCfgChanged(2.5))
+        vm.onAction(GenerateAction.HrScaleChanged(TextFieldValue("2.0")))
+        vm.onAction(GenerateAction.HrCfgChanged(TextFieldValue("2.5")))
+        vm.onAction(GenerateAction.CommitInputs)
         vm.uiState.first {
             it is GenerateUiState.Success && it.hr.enable && it.hr.scale == 2.0
         }
@@ -642,10 +645,11 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `distilled action updates params`() = runTest {
+    fun `distilled action updates params on commit`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.DistilledChanged(5.0))
+        vm.onAction(GenerateAction.DistilledChanged(TextFieldValue("5.0")))
+        vm.onAction(GenerateAction.CommitInputs)
         val state = vm.uiState.first {
             it is GenerateUiState.Success && it.params.distilledCfgScale == 5.0
         } as GenerateUiState.Success
@@ -855,5 +859,101 @@ class GenerateViewModelTest {
             it is GenerateUiState.Success && it.engine is EngineState.Initialized
         } as GenerateUiState.Success
         assertEquals(listOf("Automatic", "Beta"), state.serverSchedulers)
+    }
+
+    @Test
+    fun `generate commits uncommitted raw inputs synchronously`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(GenerateAction.WidthChanged(TextFieldValue("768")))
+        vm.onAction(GenerateAction.HeightChanged(TextFieldValue("512")))
+        vm.onAction(GenerateAction.SeedChanged(TextFieldValue("123")))
+        // No explicit CommitInputs — Generate must commit before building the job.
+        vm.onAction(GenerateAction.Generate)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Started") == true
+        }
+        assertEquals(1, queue.immediate.size)
+        val payload = queue.immediate.first().first.first().payloadJson
+        assertTrue(payload.contains("a cat"))
+        assertTrue(payload.contains("\"width\":768"))
+        assertTrue(payload.contains("\"height\":512"))
+        assertTrue(payload.contains("\"seed\":123"))
+    }
+
+    @Test
+    fun `invalid raw keeps previous domain value`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        val base = vm.uiState.value as GenerateUiState.Success
+        assertEquals(1024, base.params.width)
+        assertEquals(1.5, base.hr.scale, 1e-9)
+        assertEquals(1, base.params.batchSize)
+        vm.onAction(GenerateAction.WidthChanged(TextFieldValue("")))
+        vm.onAction(GenerateAction.HeightChanged(TextFieldValue("abc")))
+        vm.onAction(GenerateAction.HrScaleChanged(TextFieldValue("7.")))
+        vm.onAction(GenerateAction.BatchSizeChanged(TextFieldValue("")))
+        vm.onAction(GenerateAction.CommitInputs)
+        val after = vm.uiState.first {
+            it is GenerateUiState.Success && it.inputs.width.text == ""
+        } as GenerateUiState.Success
+        assertEquals(1024, after.params.width)
+        assertEquals(1024, after.params.height)
+        assertEquals(1.5, after.hr.scale, 1e-9)
+        assertEquals(1, after.params.batchSize)
+        // Raw text survives so typing can continue.
+        assertEquals("", after.inputs.width.text)
+        assertEquals("abc", after.inputs.height.text)
+        assertEquals("7.", after.inputs.hrScale.text)
+    }
+
+    @Test
+    fun `external lora append merges preserving local typing`() = runTest {
+        val ext = FakePromptDraftRepository()
+        val vm = viewModel(drafts = ext)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat", TextRange(2))))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.inputs.prompt.text == "a cat"
+        }
+        // LoRA browser appends directly to the repo, bypassing the VM.
+        ext.appendPrompt(GenerationMode.SDXL, "<lora:x>", "")
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.inputs.prompt.text == "a cat <lora:x>"
+        } as GenerateUiState.Success
+        assertEquals("a cat <lora:x>", state.inputs.prompt.text)
+        assertEquals(TextRange(2), state.inputs.prompt.selection)
+        assertEquals("a cat <lora:x>", state.params.prompt)
+    }
+
+    @Test
+    fun `mode switch commits before reset`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("cat")))
+        vm.onAction(GenerateAction.HrScaleChanged(TextFieldValue("2.0")))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.inputs.prompt.text == "cat"
+        }
+        // Uncommitted HR raw must be flushed to the SDXL repo before the reset.
+        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
+        val flux = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
+        } as GenerateUiState.Success
+        assertEquals(20, flux.params.steps)
+        assertEquals(3.5, flux.params.cfgScale, 1e-9)
+        assertEquals("", flux.inputs.prompt.text)
+        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
+        val back = vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.mode == GenerationMode.SDXL && it.inputs.prompt.text == "cat"
+        } as GenerateUiState.Success
+        assertEquals("cat", back.inputs.prompt.text)
+        val hrBack = vm.uiState.first {
+            it is GenerateUiState.Success && it.hr.scale == 2.0
+        } as GenerateUiState.Success
+        assertEquals(2.0, hrBack.hr.scale, 1e-9)
+        assertEquals("2.0", hrBack.inputs.hrScale.text)
     }
 }

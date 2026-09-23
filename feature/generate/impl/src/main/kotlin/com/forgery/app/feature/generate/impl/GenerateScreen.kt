@@ -37,7 +37,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -123,12 +126,13 @@ private fun GenerateContent(
     modifier: Modifier = Modifier,
 ) {
     val p = state.params
+    val inp = state.inputs
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
+        item(key = "engine") {
             Button(
                 onClick = { onAction(GenerateAction.InitializeEngine) },
                 enabled = state.engine != EngineState.Initializing,
@@ -162,7 +166,7 @@ private fun GenerateContent(
                 )
             }
         }
-        item {
+        item(key = "mode") {
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 GenerationMode.entries.forEach { mode ->
                     SegmentedButton(
@@ -175,35 +179,39 @@ private fun GenerateContent(
             }
         }
 
-        item {
-            LabelHeader(
-                text = "Prompt",
-                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.PROMPT)) },
-                onClear = { onAction(GenerateAction.ClearPrompt) },
-            )
-            DraftTextField(
-                value = p.prompt,
-                onValueChange = { onAction(GenerateAction.PromptChanged(it)) },
-                label = null,
-                minLines = 3,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            LabelHeader(
-                text = "Negative prompt",
-                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.NEGATIVE)) },
-                onClear = { onAction(GenerateAction.ClearNegative) },
-                modifier = Modifier.padding(top = 8.dp),
-            )
-            DraftTextField(
-                value = p.negativePrompt,
-                onValueChange = { onAction(GenerateAction.NegChanged(it)) },
-                label = null,
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth(),
-            )
+        item(key = "prompt") {
+            Column(
+                Modifier.onFocusChanged { if (!it.hasFocus) onAction(GenerateAction.CommitInputs) },
+            ) {
+                LabelHeader(
+                    text = "Prompt",
+                    onSave = { onAction(GenerateAction.SaveDefault(DefaultField.PROMPT)) },
+                    onClear = { onAction(GenerateAction.ClearPrompt) },
+                )
+                DraftTextField(
+                    value = inp.prompt,
+                    onValueChange = { onAction(GenerateAction.PromptChanged(it)) },
+                    label = null,
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                LabelHeader(
+                    text = "Negative prompt",
+                    onSave = { onAction(GenerateAction.SaveDefault(DefaultField.NEGATIVE)) },
+                    onClear = { onAction(GenerateAction.ClearNegative) },
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                DraftTextField(
+                    value = inp.negativePrompt,
+                    onValueChange = { onAction(GenerateAction.NegChanged(it)) },
+                    label = null,
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
-        item {
+        item(key = "model") {
             ModelPicker(
                 label = "Model",
                 options = state.models,
@@ -218,7 +226,7 @@ private fun GenerateContent(
 
         // Forge Neo "VAE / Text Encoder": separate menu, SDXL only.
         if (p.mode == GenerationMode.SDXL) {
-            item {
+            item(key = "vae") {
                 OutlinedButton(
                     onClick = { onNavigateToModules(p.mode) },
                     modifier = Modifier.fillMaxWidth(),
@@ -231,10 +239,12 @@ private fun GenerateContent(
             }
         }
 
-        item {
+        item(key = "params") {
             Card(Modifier.fillMaxWidth()) {
                 Column(
-                    Modifier.padding(16.dp),
+                    Modifier
+                        .padding(16.dp)
+                        .onFocusChanged { if (!it.hasFocus) onAction(GenerateAction.CommitInputs) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -275,14 +285,16 @@ private fun GenerateContent(
                     if (p.mode == GenerationMode.FLUX) {
                         DecimalField(
                             label = "Distilled",
-                            value = p.distilledCfgScale,
+                            value = inp.distilled,
                             modifier = Modifier.fillMaxWidth(),
                         ) { onAction(GenerateAction.DistilledChanged(it)) }
                     }
                     SizeInputRow(
-                        width = p.width,
-                        height = p.height,
-                        onSizeChange = { w, h -> onAction(GenerateAction.SizeChanged(w, h)) },
+                        width = inp.width,
+                        height = inp.height,
+                        onWidthChange = { onAction(GenerateAction.WidthChanged(it)) },
+                        onHeightChange = { onAction(GenerateAction.HeightChanged(it)) },
+                        onSwap = { onAction(GenerateAction.SizeSwap) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     AspectRatioGrid(
@@ -299,23 +311,23 @@ private fun GenerateContent(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         DraftIntField(
-                            value = p.batchSize,
-                            onValueChange = { onAction(GenerateAction.BatchSizeChanged(it.coerceIn(1, 4))) },
+                            value = inp.batchSize,
+                            onValueChange = { onAction(GenerateAction.BatchSizeChanged(it)) },
                             label = "Batch",
                             maxDigits = 1,
                             modifier = Modifier.width(72.dp),
                         )
                         DraftIntField(
-                            value = p.batchCount,
-                            onValueChange = { onAction(GenerateAction.BatchCountChanged(it.coerceIn(1, 8))) },
+                            value = inp.batchCount,
+                            onValueChange = { onAction(GenerateAction.BatchCountChanged(it)) },
                             label = "Count",
                             maxDigits = 1,
                             modifier = Modifier.width(72.dp),
                         )
                         SeedInputRow(
-                            seed = p.seed,
+                            seed = inp.seed,
                             onSeedChange = { onAction(GenerateAction.SeedChanged(it)) },
-                            onRandomize = { onAction(GenerateAction.SeedChanged(-1)) },
+                            onRandomize = { onAction(GenerateAction.SeedRandomized) },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -323,7 +335,7 @@ private fun GenerateContent(
             }
         }
 
-        item {
+        item(key = "lora") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { onNavigateToLora(p.mode) },
@@ -336,7 +348,7 @@ private fun GenerateContent(
             }
         }
 
-        item {
+        item(key = "magic") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { onNavigateToMagic(p.mode) },
@@ -349,9 +361,13 @@ private fun GenerateContent(
             }
         }
 
-        item {
+        item(key = "hr") {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+                Column(
+                    Modifier
+                        .padding(16.dp)
+                        .onFocusChanged { if (!it.hasFocus) onAction(GenerateAction.CommitInputs) },
+                ) {
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -370,7 +386,7 @@ private fun GenerateContent(
                         )
                         if (state.upscalers.isEmpty()) {
                             DraftTextField(
-                                value = state.hr.upscaler,
+                                value = inp.hrUpscaler,
                                 onValueChange = { onAction(GenerateAction.HrUpscalerChanged(it)) },
                                 label = null,
                                 singleLine = true,
@@ -380,8 +396,14 @@ private fun GenerateContent(
                             ForgeryDropdown(
                                 label = "",
                                 options = state.upscalers,
-                                selected = state.hr.upscaler,
-                                onSelect = { onAction(GenerateAction.HrUpscalerChanged(it)) },
+                                selected = inp.hrUpscaler.text.ifBlank { state.hr.upscaler },
+                                onSelect = {
+                                    onAction(
+                                        GenerateAction.HrUpscalerChanged(
+                                            TextFieldValue(it, TextRange(it.length)),
+                                        ),
+                                    )
+                                },
                             )
                         }
                         Row(
@@ -390,12 +412,12 @@ private fun GenerateContent(
                         ) {
                             DecimalField(
                                 label = "Scale",
-                                value = state.hr.scale,
+                                value = inp.hrScale,
                                 modifier = Modifier.weight(1f),
                             ) { onAction(GenerateAction.HrScaleChanged(it)) }
                             IntField(
                                 label = "Steps",
-                                value = state.hr.steps,
+                                value = inp.hrSteps,
                                 modifier = Modifier.weight(1f),
                             ) { onAction(GenerateAction.HrStepsChanged(it)) }
                         }
@@ -405,12 +427,12 @@ private fun GenerateContent(
                         ) {
                             DecimalField(
                                 label = "Denoise",
-                                value = state.hr.denoise,
+                                value = inp.hrDenoise,
                                 modifier = Modifier.weight(1f),
                             ) { onAction(GenerateAction.HrDenoiseChanged(it)) }
                             DecimalField(
                                 label = "HR CFG",
-                                value = state.hr.cfg,
+                                value = inp.hrCfg,
                                 modifier = Modifier.weight(1f),
                             ) { onAction(GenerateAction.HrCfgChanged(it)) }
                         }
@@ -419,7 +441,7 @@ private fun GenerateContent(
             }
         }
 
-        item {
+        item(key = "actions") {
             if (state.queueRunning) {
                 val snap = state.queueSnapshot
                 if (snap != null) {
@@ -444,7 +466,7 @@ private fun GenerateContent(
         }
 
         state.statusMessage?.let { msg ->
-            item {
+            item(key = "status") {
                 Card(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.padding(12.dp),
@@ -656,21 +678,20 @@ internal fun schedulerOptionsFor(mode: GenerationMode): List<String> = when (mod
     GenerationMode.QWEN -> listOf("Simple", "Normal")
 }
 
+/**
+ * Raw decimal passthrough: the VM owns the [TextFieldValue], parsing happens
+ * on commit, never per keystroke.
+ */
 @Composable
 private fun DecimalField(
     label: String,
-    value: Double,
+    value: TextFieldValue,
     modifier: Modifier = Modifier,
-    onValueChange: (Double) -> Unit,
+    onValueChange: (TextFieldValue) -> Unit,
 ) {
     DraftTextField(
-        value = if (value.isNaN()) "" else value.toString(),
-        onValueChange = { raw ->
-            val clean = raw.filter { it.isDigit() || it == '.' }
-            if (clean.count { it == '.' } <= 1) {
-                clean.toDoubleOrNull()?.let(onValueChange)
-            }
-        },
+        value = value,
+        onValueChange = onValueChange,
         label = label,
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -678,12 +699,16 @@ private fun DecimalField(
     )
 }
 
+/**
+ * Raw integer passthrough: the VM owns the [TextFieldValue], parsing happens
+ * on commit, never per keystroke.
+ */
 @Composable
 private fun IntField(
     label: String,
-    value: Int,
+    value: TextFieldValue,
     modifier: Modifier = Modifier,
-    onValueChange: (Int) -> Unit,
+    onValueChange: (TextFieldValue) -> Unit,
 ) {
     DraftIntField(
         value = value,
@@ -700,6 +725,12 @@ private fun GenerateScreenPreview() {
         GenerateScreen(
             uiState = GenerateUiState.Success(
                 params = GenerationParams(prompt = "a cat", modelTitle = "a.safetensors"),
+                inputs = GenerateInputs(
+                    prompt = TextFieldValue("a cat", TextRange(5)),
+                    negativePrompt = TextFieldValue(""),
+                    width = TextFieldValue("1024", TextRange(4)),
+                    height = TextFieldValue("1024", TextRange(4)),
+                ),
                 models = listOf("a.safetensors"),
                 samplers = listOf("Euler"),
             ),

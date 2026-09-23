@@ -1,6 +1,7 @@
 package com.forgery.app.feature.modules.impl
 
 import androidx.lifecycle.SavedStateHandle
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
@@ -122,12 +123,13 @@ class ModulesViewModelTest {
     @Test
     fun `query filters items`() = runTest {
         val (vm, _, _) = loaded()
-        vm.onAction(ModulesAction.QueryChanged("clip"))
+        vm.onAction(ModulesAction.QueryChanged(TextFieldValue("clip")))
         val filtered = vm.uiState.first {
             it is ModulesUiState.Success && it.items == listOf("clip_l.safetensors")
         } as ModulesUiState.Success
         assertEquals(listOf("clip_l.safetensors"), filtered.items)
         assertEquals(2, filtered.totalCount)
+        assertEquals("clip", filtered.query.text)
     }
 
     @Test

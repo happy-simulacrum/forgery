@@ -1,5 +1,6 @@
 package com.forgery.app.feature.modules.impl
 
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.model.GenerationMode
 
 sealed interface ModulesUiState {
@@ -7,7 +8,8 @@ sealed interface ModulesUiState {
 
     data class Success(
         val mode: GenerationMode = GenerationMode.SDXL,
-        val query: String = "",
+        /** Raw VM-owned search text (local only, no repo). */
+        val query: TextFieldValue = TextFieldValue(""),
         val items: List<String> = emptyList(),
         val totalCount: Int = 0,
         val selected: List<String> = emptyList(),

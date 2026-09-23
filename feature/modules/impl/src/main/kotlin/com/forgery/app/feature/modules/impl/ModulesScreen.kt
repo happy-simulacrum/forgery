@@ -72,7 +72,7 @@ private fun ModulesContent(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item {
+        item(key = "modules_header") {
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -88,7 +88,7 @@ private fun ModulesContent(
             }
         }
 
-        item {
+        item(key = "modules_search") {
             DraftTextField(
                 value = state.query,
                 onValueChange = { onAction(ModulesAction.QueryChanged(it)) },
@@ -99,11 +99,11 @@ private fun ModulesContent(
         }
 
         if (state.listLoading && state.items.isEmpty()) {
-            item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            item(key = "modules_loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
 
         state.listError?.let { error ->
-            item {
+            item(key = "modules_error") {
                 Card(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.padding(12.dp),
@@ -121,7 +121,7 @@ private fun ModulesContent(
         }
 
         if (state.items.isEmpty() && !state.listLoading && state.listError == null) {
-            item { ErrorState("No VAE / Text Encoder modules on the server.", Modifier) }
+            item(key = "modules_empty") { ErrorState("No VAE / Text Encoder modules on the server.", Modifier) }
         }
 
         items(state.items, key = { it }) { name ->
@@ -142,7 +142,7 @@ private fun ModulesContent(
             }
         }
 
-        item {
+        item(key = "modules_footer") {
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

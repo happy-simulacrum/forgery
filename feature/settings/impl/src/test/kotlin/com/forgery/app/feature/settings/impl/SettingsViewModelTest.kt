@@ -1,6 +1,7 @@
 package com.forgery.app.feature.settings.impl
 
 import com.forgery.app.core.data.ConnectionRepository
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.UiPrefs
 import com.forgery.app.core.network.ForgeApiFactory
@@ -94,5 +95,53 @@ class SettingsViewModelTest {
         } as SettingsUiState.Success
         assertEquals(1, repository.resetCalls)
         assertEquals("192.168.1.100", state.draft.baseIp)
+    }
+
+    @Test
+    fun `raw keystrokes commit on focus loss, invalid port keeps domain`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is SettingsUiState.Success }
+
+        vm.onAction(SettingsAction.BaseIpChanged(TextFieldValue("10.0.0.9")))
+        vm.onAction(SettingsAction.PortWebUiChanged(TextFieldValue("4321")))
+
+        // Raw visible immediately, domain untouched until commit.
+        val typing = vm.uiState.first {
+            it is SettingsUiState.Success && it.texts.baseIp.text == "10.0.0.9"
+        } as SettingsUiState.Success
+        assertEquals("192.168.1.100", typing.draft.baseIp)
+
+        vm.onAction(SettingsAction.CommitInputs)
+
+        val committed = vm.uiState.first {
+            it is SettingsUiState.Success && it.draft.baseIp == "10.0.0.9"
+        } as SettingsUiState.Success
+        assertEquals(4321, committed.draft.portWebUi)
+
+        // Invalid raw keeps the previous domain value.
+        vm.onAction(SettingsAction.PortWebUiChanged(TextFieldValue("abc")))
+        vm.onAction(SettingsAction.CommitInputs)
+        val kept = vm.uiState.first {
+            it is SettingsUiState.Success && it.texts.portWebUi.text == "abc"
+        } as SettingsUiState.Success
+        assertEquals(4321, kept.draft.portWebUi)
+    }
+
+    @Test
+    fun `save parses raw text`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is SettingsUiState.Success }
+
+        vm.onAction(SettingsAction.PortComfyChanged(TextFieldValue("9999")))
+        vm.uiState.first {
+            it is SettingsUiState.Success && it.texts.portComfy.text == "9999"
+        }
+        vm.onAction(SettingsAction.Save)
+
+        val clean = vm.uiState.first {
+            it is SettingsUiState.Success && !it.isDirty && it.draft.portComfy == 9999
+        } as SettingsUiState.Success
+        assertEquals(9999, repository.savedConfigs.last().portComfy)
+        assertTrue(clean.draft.isConfigured)
     }
 }

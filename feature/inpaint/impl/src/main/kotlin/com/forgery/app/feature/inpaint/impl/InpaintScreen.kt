@@ -20,7 +20,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
@@ -30,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -113,7 +114,7 @@ private fun InpaintContent(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
+        item(key = "inpaint_image") {
             val source = state.source
             if (source == null) {
                 Button(onClick = onPickImage, modifier = Modifier.fillMaxWidth()) {
@@ -147,7 +148,7 @@ private fun InpaintContent(
         }
 
         if (state.source != null) {
-            item {
+            item(key = "inpaint_brush") {
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     SegmentedButton(
                         selected = !state.eraseMode,
@@ -168,38 +169,47 @@ private fun InpaintContent(
                 ) { onAction(InpaintAction.BrushChanged(it)) }
             }
 
-            item {
-                OutlinedTextField(
-                    value = state.prompt,
+            item(key = "inpaint_prompts") {
+                DraftTextField(
+                    value = state.promptDraft,
                     onValueChange = { onAction(InpaintAction.PromptChanged(it)) },
-                    label = { Text("Prompt") },
+                    label = "Prompt",
                     minLines = 2,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().onFocusChanged {
+                        if (!it.isFocused) onAction(InpaintAction.CommitInputs)
+                    },
                 )
-                OutlinedTextField(
-                    value = state.negativePrompt,
+                DraftTextField(
+                    value = state.negativeDraft,
                     onValueChange = { onAction(InpaintAction.NegChanged(it)) },
-                    label = { Text("Negative prompt") },
+                    label = "Negative prompt",
                     minLines = 1,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).onFocusChanged {
+                        if (!it.isFocused) onAction(InpaintAction.CommitInputs)
+                    },
                 )
             }
 
-            item {
+            item(key = "inpaint_model") {
                 if (state.models.isEmpty()) {
-                    OutlinedTextField(
-                        value = state.modelTitle,
+                    DraftTextField(
+                        value = state.modelDraft,
                         onValueChange = { onAction(InpaintAction.ModelChanged(it)) },
-                        label = { Text("Model (type manually)") },
+                        label = "Model (type manually)",
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().onFocusChanged {
+                            if (!it.isFocused) onAction(InpaintAction.CommitInputs)
+                        },
                     )
                 } else {
                     ForgeryDropdown(
                         label = "Model",
                         options = state.models,
                         selected = state.modelTitle.ifBlank { state.models.first() },
-                        onSelect = { onAction(InpaintAction.ModelChanged(it)) },
+                        onSelect = {
+                            onAction(InpaintAction.ModelChanged(TextFieldValue(it)))
+                            onAction(InpaintAction.CommitInputs)
+                        },
                     )
                 }
                 if (state.modelsLoading) {
@@ -216,7 +226,7 @@ private fun InpaintContent(
                 }
             }
 
-            item {
+            item(key = "inpaint_samplers") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ForgeryDropdown(
                         label = "Sampler",
@@ -235,19 +245,19 @@ private fun InpaintContent(
                 }
             }
 
-            item {
+            item(key = "inpaint_params") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     IntField(
                         label = "Steps",
-                        value = state.steps,
-                        range = 1..50,
+                        value = state.stepsDraft,
                         modifier = Modifier.weight(1f),
+                        onCommit = { onAction(InpaintAction.CommitInputs) },
                     ) { onAction(InpaintAction.StepsChanged(it)) }
                     DecimalField(
                         label = "CFG",
-                        value = state.cfgScale,
-                        range = 0.0..15.0,
+                        value = state.cfgDraft,
                         modifier = Modifier.weight(1f),
+                        onCommit = { onAction(InpaintAction.CommitInputs) },
                     ) { onAction(InpaintAction.CfgChanged(it)) }
                 }
                 Row(
@@ -256,20 +266,20 @@ private fun InpaintContent(
                 ) {
                     DecimalField(
                         label = "Denoise",
-                        value = state.denoise,
-                        range = 0.0..1.0,
+                        value = state.denoiseDraft,
                         modifier = Modifier.weight(1f),
+                        onCommit = { onAction(InpaintAction.CommitInputs) },
                     ) { onAction(InpaintAction.DenoiseChanged(it)) }
                     IntField(
                         label = "Mask blur",
-                        value = state.maskBlur,
-                        range = 0..64,
+                        value = state.maskBlurDraft,
                         modifier = Modifier.weight(1f),
+                        onCommit = { onAction(InpaintAction.CommitInputs) },
                     ) { onAction(InpaintAction.MaskBlurChanged(it)) }
                 }
             }
 
-            item {
+            item(key = "inpaint_generate") {
                 Button(
                     onClick = { onAction(InpaintAction.Generate) },
                     modifier = Modifier.fillMaxWidth(),
@@ -278,7 +288,7 @@ private fun InpaintContent(
         }
 
         state.statusMessage?.let { msg ->
-            item {
+            item(key = "inpaint_status") {
                 Card(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(msg, Modifier.weight(1f))
@@ -389,39 +399,34 @@ private fun SliderRow(
 @Composable
 private fun DecimalField(
     label: String,
-    value: Double,
-    range: ClosedFloatingPointRange<Double>,
+    value: TextFieldValue,
     modifier: Modifier = Modifier,
-    onValueChange: (Double) -> Unit,
+    onCommit: () -> Unit,
+    onValueChange: (TextFieldValue) -> Unit,
 ) {
     DraftTextField(
-        value = if (value.isNaN()) "" else value.toString(),
-        onValueChange = { raw ->
-            val clean = raw.filter { it.isDigit() || it == '.' }
-            if (clean.count { it == '.' } <= 1) {
-                clean.toDoubleOrNull()?.coerceIn(range)?.let(onValueChange)
-            }
-        },
+        value = value,
+        onValueChange = onValueChange,
         label = label,
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        modifier = modifier,
+        modifier = modifier.onFocusChanged { if (!it.isFocused) onCommit() },
     )
 }
 
 @Composable
 private fun IntField(
     label: String,
-    value: Int,
-    range: IntRange,
+    value: TextFieldValue,
     modifier: Modifier = Modifier,
-    onValueChange: (Int) -> Unit,
+    onCommit: () -> Unit,
+    onValueChange: (TextFieldValue) -> Unit,
 ) {
     DraftIntField(
         value = value,
-        onValueChange = { onValueChange(it.coerceIn(range)) },
+        onValueChange = onValueChange,
         label = label,
-        modifier = modifier,
+        modifier = modifier.onFocusChanged { if (!it.isFocused) onCommit() },
     )
 }
 
@@ -430,7 +435,10 @@ private fun IntField(
 private fun InpaintScreenPreview() {
     ForgeryTheme {
         InpaintScreen(
-            uiState = InpaintUiState.Success(prompt = "fix"),
+            uiState = InpaintUiState.Success(
+                prompt = "fix",
+                promptDraft = TextFieldValue("fix"),
+            ),
             activeStroke = null,
             onAction = {},
             onPickImage = {},

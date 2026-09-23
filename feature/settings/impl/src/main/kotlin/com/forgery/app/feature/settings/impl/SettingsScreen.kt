@@ -24,7 +24,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -86,7 +88,7 @@ private fun SettingsContent(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
+        item(key = "settings_appearance") {
             SectionCard("APPEARANCE") {
                 SwitchRow(
                     label = "Dark theme",
@@ -98,7 +100,7 @@ private fun SettingsContent(
             }
         }
 
-        item {
+        item(key = "settings_connection") {
             SectionCard("CONNECTION MODE") {
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     SegmentedButton(
@@ -120,28 +122,49 @@ private fun SettingsContent(
                 }
                 Spacer(Modifier.height(8.dp))
                 if (!config.isRemote) {
-                    TextRow("PC IP", config.baseIp) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(baseIp = it)))
-                    }
-                    PortRow("WebUI port", config.portWebUi) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(portWebUi = it)))
-                    }
-                    PortRow("ComfyUI port", config.portComfy) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(portComfy = it)))
-                    }
-                    PortRow("LLM port", config.portLlm) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(portLlm = it)))
-                    }
-                    PortRow("Wake port", config.portWake) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(portWake = it)))
-                    }
+                    TextRow(
+                        label = "PC IP",
+                        value = state.texts.baseIp,
+                        onValueChange = { onAction(SettingsAction.BaseIpChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
+                    PortRow(
+                        label = "WebUI port",
+                        value = state.texts.portWebUi,
+                        onValueChange = { onAction(SettingsAction.PortWebUiChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
+                    PortRow(
+                        label = "ComfyUI port",
+                        value = state.texts.portComfy,
+                        onValueChange = { onAction(SettingsAction.PortComfyChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
+                    PortRow(
+                        label = "LLM port",
+                        value = state.texts.portLlm,
+                        onValueChange = { onAction(SettingsAction.PortLlmChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
+                    PortRow(
+                        label = "Wake port",
+                        value = state.texts.portWake,
+                        onValueChange = { onAction(SettingsAction.PortWakeChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
                 } else {
-                    TextRow("Forge URL", config.extForgeUrl) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(extForgeUrl = it)))
-                    }
-                    TextRow("Wake URL", config.extWakeUrl) {
-                        onAction(SettingsAction.ConfigChanged(config.copy(extWakeUrl = it)))
-                    }
+                    TextRow(
+                        label = "Forge URL",
+                        value = state.texts.extForgeUrl,
+                        onValueChange = { onAction(SettingsAction.ExtForgeUrlChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
+                    TextRow(
+                        label = "Wake URL",
+                        value = state.texts.extWakeUrl,
+                        onValueChange = { onAction(SettingsAction.ExtWakeUrlChanged(it)) },
+                        onCommit = { onAction(SettingsAction.CommitInputs) },
+                    )
                     SwitchRow(
                         label = "Cloudflare Access",
                         checked = config.isCloudflare,
@@ -150,18 +173,24 @@ private fun SettingsContent(
                         },
                     )
                     if (config.isCloudflare) {
-                        TextRow("CF client ID", config.cfClientId) {
-                            onAction(SettingsAction.ConfigChanged(config.copy(cfClientId = it)))
-                        }
-                        TextRow("CF client secret", config.cfClientSecret) {
-                            onAction(SettingsAction.ConfigChanged(config.copy(cfClientSecret = it)))
-                        }
+                        TextRow(
+                            label = "CF client ID",
+                            value = state.texts.cfClientId,
+                            onValueChange = { onAction(SettingsAction.CfClientIdChanged(it)) },
+                            onCommit = { onAction(SettingsAction.CommitInputs) },
+                        )
+                        TextRow(
+                            label = "CF client secret",
+                            value = state.texts.cfClientSecret,
+                            onValueChange = { onAction(SettingsAction.CfClientSecretChanged(it)) },
+                            onCommit = { onAction(SettingsAction.CommitInputs) },
+                        )
                     }
                 }
             }
         }
 
-        item {
+        item(key = "settings_tabs") {
             SectionCard("INTERFACE TABS") {
                 SwitchRow("SDXL tab", prefs.showXl) {
                     onAction(SettingsAction.UiPrefsChanged(prefs.copy(showXl = it)))
@@ -178,7 +207,7 @@ private fun SettingsContent(
             }
         }
 
-        item {
+        item(key = "settings_system") {
             SectionCard("SYSTEM") {
                 when (val c = state.check) {
                     CheckState.Idle -> Unit
@@ -243,18 +272,30 @@ private fun SwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean
 }
 
 @Composable
-private fun TextRow(label: String, value: String, onValueChange: (String) -> Unit) {
+private fun TextRow(
+    label: String,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    onCommit: () -> Unit,
+) {
     DraftTextField(
         value = value,
         onValueChange = onValueChange,
         label = label,
         singleLine = true,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).onFocusChanged {
+            if (!it.isFocused) onCommit()
+        },
     )
 }
 
 @Composable
-private fun PortRow(label: String, value: Int, onValueChange: (Int) -> Unit) {
+private fun PortRow(
+    label: String,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    onCommit: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -264,7 +305,9 @@ private fun PortRow(label: String, value: Int, onValueChange: (Int) -> Unit) {
         DraftIntField(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.width(110.dp),
+            modifier = Modifier.width(110.dp).onFocusChanged {
+                if (!it.isFocused) onCommit()
+            },
         )
     }
 }
@@ -277,6 +320,7 @@ private fun SettingsScreenPreview() {
             uiState = SettingsUiState.Success(
                 draft = ConnectionConfig(baseIp = "192.168.1.107"),
                 draftUi = UiPrefs(),
+                texts = SettingsTextDrafts(baseIp = TextFieldValue("192.168.1.107")),
                 isDirty = true,
                 check = CheckState.Ok(3),
             ),

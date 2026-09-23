@@ -1,6 +1,7 @@
 package com.forgery.app.feature.inpaint.impl
 
 import androidx.lifecycle.SavedStateHandle
+import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
@@ -106,7 +107,7 @@ class InpaintViewModelTest {
     fun `generate without image is rejected`() = runTest {
         val vm = viewModel()
         vm.uiState.success()
-        vm.onAction(InpaintAction.PromptChanged("x"))
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("x")))
         vm.onAction(InpaintAction.Generate)
         assertEquals("Pick an image first.", vm.uiState.success().statusMessage)
         assertTrue(queue.immediate.isEmpty())
@@ -171,7 +172,7 @@ class InpaintViewModelTest {
         vm.uiState.success()
         vm.onAction(InpaintAction.PickResult("content://img/1"))
         vm.uiState.first { it is InpaintUiState.Success && it.source != null }
-        vm.onAction(InpaintAction.PromptChanged("a cat"))
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(InpaintAction.Generate)
         val state = vm.uiState.first {
             it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
@@ -182,13 +183,51 @@ class InpaintViewModelTest {
     }
 
     @Test
+    fun `generate commits uncommitted raw input before enqueue`() = runTest {
+        val vm = viewModel()
+        vm.uiState.success()
+        vm.onAction(InpaintAction.PickResult("content://img/1"))
+        vm.uiState.first { it is InpaintUiState.Success && it.source != null }
+        // Raw keystrokes only — no explicit commit.
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(InpaintAction.StepsChanged(TextFieldValue("30")))
+        vm.onAction(InpaintAction.CfgChanged(TextFieldValue("9.5")))
+        vm.onAction(InpaintAction.Generate)
+        val state = vm.uiState.first {
+            it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
+        } as InpaintUiState.Success
+        assertEquals("a cat", state.prompt)
+        assertEquals(30, state.steps)
+        assertEquals(9.5, state.cfgScale, 0.0)
+        assertEquals(1, queue.immediate.size)
+    }
+
+    @Test
+    fun `invalid raw keeps previous domain on commit`() = runTest {
+        val vm = viewModel()
+        vm.uiState.success()
+        vm.onAction(InpaintAction.StepsChanged(TextFieldValue("abc")))
+        vm.onAction(InpaintAction.CfgChanged(TextFieldValue("..")))
+        vm.onAction(InpaintAction.DenoiseChanged(TextFieldValue("")))
+        vm.onAction(InpaintAction.MaskBlurChanged(TextFieldValue("xyz")))
+        vm.onAction(InpaintAction.CommitInputs)
+        val state = vm.uiState.success()
+        assertEquals(20, state.steps)
+        assertEquals(7.0, state.cfgScale, 0.0)
+        assertEquals(0.75, state.denoise, 0.0)
+        assertEquals(4, state.maskBlur)
+        // Raw text survives so typing can continue.
+        assertEquals("abc", state.stepsDraft.text)
+    }
+
+    @Test
     fun `enqueue while running reports behind current job`() = runTest {        queue.snapshot.value =
             QueueSnapshot(running = true, currentIndex = 0, total = 1, origin = "q", stopReason = null)
         val vm = viewModel()
         vm.uiState.first { it is InpaintUiState.Success && it.queueRunning }
         vm.onAction(InpaintAction.PickResult("content://img/1"))
         vm.uiState.first { it is InpaintUiState.Success && it.source != null }
-        vm.onAction(InpaintAction.PromptChanged("a cat"))
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(InpaintAction.Generate)
         val state = vm.uiState.first {
             it is InpaintUiState.Success && it.statusMessage == "Added behind current job"
@@ -208,7 +247,7 @@ class InpaintViewModelTest {
         }
         vm.onAction(InpaintAction.PickResult("content://img/1"))
         vm.uiState.first { it is InpaintUiState.Success && it.source != null }
-        vm.onAction(InpaintAction.PromptChanged("a cat"))
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
         vm.onAction(InpaintAction.Generate)
         vm.uiState.first {
             it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
