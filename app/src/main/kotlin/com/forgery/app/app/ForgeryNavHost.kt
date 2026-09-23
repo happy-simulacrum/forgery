@@ -8,6 +8,8 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ImageSearch
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -16,7 +18,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -46,8 +51,11 @@ import com.forgery.app.feature.styles.impl.stylesScreen
 private data class TopDest(val label: String, val icon: ImageVector, val route: Any)
 
 @Composable
-fun ForgeryNavHost() {
+fun ForgeryNavHost(
+    queueBadgeViewModel: QueueBadgeViewModel = hiltViewModel(),
+) {
     val nav = rememberNavController()
+    val pendingCount by queueBadgeViewModel.pendingCount.collectAsStateWithLifecycle()
     val dests = listOf(
         TopDest("GEN", Icons.Filled.AutoAwesome, GenerateRoute()),
         TopDest("INP", Icons.Filled.Brush, InpaintRoute()),
@@ -80,7 +88,27 @@ fun ForgeryNavHost() {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(d.icon, d.label) },
+                        icon = {
+                            if (d.route is QueueRoute && pendingCount > 0) {
+                                BadgedBox(
+                                    badge = {
+                                        Badge(
+                                            containerColor = Color(0xFFFFC107),
+                                            contentColor = Color.Black,
+                                        ) {
+                                            Text(formatBadgeCount(pendingCount))
+                                        }
+                                    },
+                                ) {
+                                    Icon(
+                                        d.icon,
+                                        contentDescription = "Queue, $pendingCount pending",
+                                    )
+                                }
+                            } else {
+                                Icon(d.icon, d.label)
+                            }
+                        },
                         label = { Text(d.label) },
                     )
                 }

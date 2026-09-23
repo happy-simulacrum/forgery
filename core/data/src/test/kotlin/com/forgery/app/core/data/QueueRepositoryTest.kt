@@ -119,6 +119,18 @@ class QueueRepositoryTest {
     private fun repo(dao: FakeQueueStateDao) =
         DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo())
 
+    /**
+     * Test double that records worker launches instead of touching WorkManager
+     * (unavailable under local unit tests).
+     */
+    private class LaunchRecordingRepository(dao: FakeQueueStateDao) :
+        DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo()) {
+        val launches = mutableListOf<Triple<String, String, String>>()
+        override fun launchWorker(host: String, jobsJson: String, origin: String) {
+            launches += Triple(host, jobsJson, origin)
+        }
+    }
+
     @Test
     fun `clearCompleted removes done jobs and their results, keeps pending`() = runTest {
         val dao = FakeQueueStateDao(
@@ -353,5 +365,290 @@ class QueueRepositoryTest {
         )
         assertEquals(before.total, saved.total)
         assertEquals(before.currentIndex, saved.currentIndex)
+    }
+
+    @Test
+    fun `start with pending launches worker`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = emptyList(),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.start()
+
+        val saved = dao.get()!!
+        assertTrue(saved.running)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `enqueueImmediate idle appends behind existing queue and starts it`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.enqueueImmediate(listOf(queueJob("9")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2", "9"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(3, saved.total)
+        assertEquals("single", saved.origin)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `enqueueImmediate idle after completed batch keeps DONE section`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.enqueueImmediate(listOf(queueJob("2")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(2, saved.total)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `enqueueImmediate running inserts after current without launching`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = emptyList(),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.enqueueImmediate(listOf(queueJob("9")), "single")
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "9", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertTrue(saved.running)
+        assertEquals(0, saved.currentIndex)
+        assertEquals(3, saved.total)
+        assertTrue(repository.launches.isEmpty())
+    }
+
+    @Test
+    fun `removeJob idle pending removes the job only`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        assertTrue(repo(dao).removeJob("2"))
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertEquals(2, saved.total)
+        assertEquals(1, saved.currentIndex)
+        assertFalse(saved.running)
+    }
+
+    @Test
+    fun `removeJob DONE removes the job and its result, shifts pointer`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        assertTrue(repo(dao).removeJob("1"))
+
+        val saved = dao.get()!!
+        assertEquals(listOf("2", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertTrue(decodeTestResults(saved.resultsJson).isEmpty())
+        assertEquals(2, saved.total)
+        assertEquals(0, saved.currentIndex)
+    }
+
+    @Test
+    fun `removeJob running current is refused`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        assertFalse(repo(dao).removeJob("2"))
+        assertEquals(0, dao.saves)
+    }
+
+    @Test
+    fun `removeJob running future keeps pointer, shrinks total`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        assertTrue(repo(dao).removeJob("3"))
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(2, saved.total)
+    }
+
+    @Test
+    fun `removeJob running past DONE shifts pointer`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 2,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1"), queueResult("2")),
+            ),
+        )
+        assertTrue(repo(dao).removeJob("1"))
+
+        val saved = dao.get()!!
+        assertEquals(listOf("2", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("2"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(2, saved.total)
+    }
+
+    @Test
+    fun `removeJob unknown id and null state are no-ops`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1")),
+                results = emptyList(),
+            ),
+        )
+        assertFalse(repo(dao).removeJob("nope"))
+        assertEquals(0, dao.saves)
+
+        val empty = FakeQueueStateDao(null)
+        assertFalse(repo(empty).removeJob("1"))
+        assertNull(empty.get())
+    }
+
+    @Test
+    fun `moveJob idle reorders pending, keeps rest`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = emptyList(),
+            ),
+        )
+        assertTrue(repo(dao).moveJob("3", 0))
+
+        val saved = dao.get()!!
+        assertEquals(listOf("3", "1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(3, saved.total)
+        assertEquals(0, saved.currentIndex)
+        assertFalse(saved.running)
+    }
+
+    @Test
+    fun `moveJob DONE is refused`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        assertFalse(repo(dao).moveJob("1", 1))
+        assertEquals(0, dao.saves)
+    }
+
+    @Test
+    fun `moveJob running pins executing and earlier slots`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3"), queueJob("4")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = repo(dao)
+        // Executing job itself cannot move…
+        assertFalse(repository.moveJob("2", 2))
+        // …and nothing may land on/before its slot.
+        assertFalse(repository.moveJob("3", 0))
+        assertEquals(0, dao.saves)
+
+        // Future pending jobs permute freely behind it.
+        assertTrue(repository.moveJob("4", 1))
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2", "4", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(listOf("1"), decodeTestResults(saved.resultsJson).map { it.jobId })
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(4, saved.total)
+    }
+
+    @Test
+    fun `moveJob to same position is a no-op success`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = emptyList(),
+            ),
+        )
+        assertTrue(repo(dao).moveJob("1", 0))
+        assertEquals(0, dao.saves)
+    }
+
+    @Test
+    fun `moveJob unknown id and null state are no-ops`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1")),
+                results = emptyList(),
+            ),
+        )
+        assertFalse(repo(dao).moveJob("nope", 0))
+
+        val empty = FakeQueueStateDao(null)
+        assertFalse(repo(empty).moveJob("1", 0))
+        assertNull(empty.get())
     }
 }

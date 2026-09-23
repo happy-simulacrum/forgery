@@ -112,6 +112,8 @@ private class FakeQueueRepository : QueueRepository {
     override suspend fun clearPending() {
         clearsPending++
     }
+    override suspend fun removeJob(jobId: String): Boolean = true
+    override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean = true
 }
 
 private class FakePromptDraftRepository : PromptDraftRepository {

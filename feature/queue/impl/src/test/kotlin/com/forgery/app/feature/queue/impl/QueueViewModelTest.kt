@@ -29,6 +29,8 @@ private class FakeQueueRepository(
     var starts = 0
     var clearPendingCalls = 0
     var clearCompletedCalls = 0
+    val removes = mutableListOf<String>()
+    val moves = mutableListOf<Pair<String, Int>>()
     override fun observeSnapshot(): Flow<QueueSnapshot?> = snapshotFlow.asStateFlow()
     override fun observeJobs(): Flow<List<QueueJob>> = jobsFlow.asStateFlow()
     override fun observeResults(): Flow<List<QueueResult>> = resultsFlow.asStateFlow()
@@ -41,6 +43,29 @@ private class FakeQueueRepository(
         snapshotFlow.value = snapshotFlow.value?.copy(running = true)
     }
     override suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String) = Unit
+    override suspend fun removeJob(jobId: String): Boolean {
+        val snapshot = snapshotFlow.value
+        val jobs = jobsFlow.value
+        val index = jobs.indexOfFirst { it.id == jobId }
+        if (index < 0) return false
+        if (snapshot?.running == true && index == snapshot.currentIndex) return false
+        removes += jobId
+        jobsFlow.value = jobs.filterIndexed { i, _ -> i != index }
+        resultsFlow.value = resultsFlow.value.filter { it.jobId != jobId }
+        return true
+    }
+    override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean {
+        val jobs = jobsFlow.value
+        val doneIds = resultsFlow.value.map { it.jobId }.toSet()
+        val pending = jobs.filter { it.id !in doneIds }.toMutableList()
+        val from = pending.indexOfFirst { it.id == jobId }
+        if (from < 0 || toPendingIndex !in pending.indices) return false
+        moves += jobId to toPendingIndex
+        val moving = pending.removeAt(from)
+        pending.add(toPendingIndex, moving)
+        jobsFlow.value = jobs.filter { it.id in doneIds } + pending
+        return true
+    }
     override suspend fun cancel() {
         cancels++
         snapshotFlow.value = snapshotFlow.value?.copy(running = false)
@@ -278,6 +303,78 @@ class QueueViewModelTest {
         assertEquals(1, repo.clearCompletedCalls)
         val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
         assertEquals(listOf("2"), state.jobs.map { it.id })
+    }
+
+    @Test
+    fun `delete delegates to repository and drops the job`() = runTest {
+        val jobs = listOf(
+            QueueJob("1", "one", "txt", "m", "{}"),
+            QueueJob("2", "two", "txt", "m", "{}"),
+        )
+        val repo = FakeQueueRepository(jobs = jobs)
+        val vm = QueueViewModel(repo)
+        vm.uiState.first { it is QueueUiState.Success }
+        vm.onAction(QueueAction.DeleteJob("1"))
+        assertEquals(listOf("1"), repo.removes)
+        val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertEquals(listOf("2"), state.jobs.map { it.id })
+    }
+
+    @Test
+    fun `delete of executing job is refused`() = runTest {
+        val jobs = listOf(
+            QueueJob("1", "one", "txt", "m", "{}"),
+            QueueJob("2", "two", "txt", "m", "{}"),
+        )
+        val repo = FakeQueueRepository(
+            snapshot = QueueSnapshot(true, 0, 2, "queue", null),
+            jobs = jobs,
+        )
+        val vm = QueueViewModel(repo)
+        vm.uiState.first { it is QueueUiState.Success }
+        vm.onAction(QueueAction.DeleteJob("1"))
+        assertTrue(repo.removes.isEmpty())
+        val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertEquals(listOf("1", "2"), state.jobs.map { it.id })
+        assertEquals("1", state.executingJobId)
+    }
+
+    @Test
+    fun `move delegates to repository and reorders pending`() = runTest {
+        val jobs = listOf(
+            QueueJob("1", "one", "txt", "m", "{}"),
+            QueueJob("2", "two", "txt", "m", "{}"),
+            QueueJob("3", "three", "txt", "m", "{}"),
+        )
+        val repo = FakeQueueRepository(jobs = jobs)
+        val vm = QueueViewModel(repo)
+        vm.uiState.first { it is QueueUiState.Success }
+        vm.onAction(QueueAction.MoveJob("3", 0))
+        assertEquals(listOf("3" to 0), repo.moves)
+        val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertEquals(listOf("3", "1", "2"), state.pendingJobs.map { it.id })
+    }
+
+    @Test
+    fun `executingJobId is null when idle or pointer out of range`() = runTest {
+        val jobs = listOf(QueueJob("1", "one", "txt", "m", "{}"))
+        var vm = QueueViewModel(
+            FakeQueueRepository(
+                snapshot = QueueSnapshot(false, 0, 1, "queue", null),
+                jobs = jobs,
+            ),
+        )
+        var state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertNull(state.executingJobId)
+
+        vm = QueueViewModel(
+            FakeQueueRepository(
+                snapshot = QueueSnapshot(true, 5, 1, "queue", null),
+                jobs = jobs,
+            ),
+        )
+        state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertNull(state.executingJobId)
     }
 
     @Test

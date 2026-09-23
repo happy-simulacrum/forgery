@@ -67,6 +67,12 @@ class QueueViewModel @Inject constructor(
             QueueAction.ConfirmClearCompleted -> viewModelScope.launch {
                 queueRepository.clearCompleted()
             }
+            is QueueAction.DeleteJob -> viewModelScope.launch {
+                queueRepository.removeJob(action.jobId)
+            }
+            is QueueAction.MoveJob -> viewModelScope.launch {
+                queueRepository.moveJob(action.jobId, action.toPendingIndex)
+            }
         }
     }
 }
@@ -79,4 +85,6 @@ sealed interface QueueAction {
     data object DismissClearDialog : QueueAction
     data object RequestClearCompleted : QueueAction
     data object ConfirmClearCompleted : QueueAction
+    data class DeleteJob(val jobId: String) : QueueAction
+    data class MoveJob(val jobId: String, val toPendingIndex: Int) : QueueAction
 }

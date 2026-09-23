@@ -63,6 +63,8 @@ private class FakeQueueRepository : QueueRepository {
     override suspend fun cancel() = Unit
     override suspend fun clearCompleted() = Unit
     override suspend fun clearPending() = Unit
+    override suspend fun removeJob(jobId: String): Boolean = true
+    override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean = true
 }
 
 class InpaintViewModelTest {

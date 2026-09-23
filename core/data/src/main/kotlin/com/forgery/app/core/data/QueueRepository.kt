@@ -42,12 +42,31 @@ interface QueueRepository {
     suspend fun start()
 
     /**
-     * GENERATE button: start immediately when idle; when a batch is running,
+     * GENERATE button: append behind existing jobs and start everything when
+     * idle (never replaces the staged queue); when a batch is running,
      * insert right after the currently executing job.
      */
     suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String)
 
     suspend fun cancel()
+
+    /**
+     * Remove a single job (from TO DO or DONE) plus its [QueueResult] if any.
+     * Returns false and changes nothing when the job is currently executing
+     * ([QueueSnapshot.currentIndex] while running) or does not exist.
+     * Removing a job before the execution pointer shifts `currentIndex` down
+     * so the worker (which re-reads the list every iteration) stays aligned.
+     */
+    suspend fun removeJob(jobId: String): Boolean
+
+    /**
+     * Move a pending (TO DO, result-less) job to another pending position
+     * ([toPendingIndex] counts result-less jobs in list order). DONE jobs are
+     * not movable. While running, the currently executing job is pinned: it
+     * cannot be moved and nothing may be moved onto/before its slot.
+     * Returns false and changes nothing on any rule violation.
+     */
+    suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean
 
     /**
      * Clear completed section (DONE): removes jobs that have a [QueueResult]
@@ -68,8 +87,8 @@ interface QueueRepository {
 }
 
 @Singleton
-class DefaultQueueRepository @Inject constructor(
-    @ApplicationContext private val context: Context,
+open class DefaultQueueRepository @Inject constructor(
+        @ApplicationContext private val context: Context,
     private val dao: QueueStateDao,
     private val connectionRepository: ConnectionRepository,
 ) : QueueRepository {
@@ -171,6 +190,25 @@ class DefaultQueueRepository @Inject constructor(
                     total = merged.size,
                 ),
             )
+        } else if (state != null && currentJobs.isNotEmpty()) {
+            // Idle with an existing queue: append behind existing jobs (DONE
+            // results and currentIndex are kept — currentIndex already points
+            // at the first pending job) and start the whole queue. Never
+            // replaces the staged queue.
+            val host = connectionRepository.observe().first().webUiBaseUrl()
+            val merged = currentJobs + jobs
+            val mergedJson = encodeJobs(merged)
+            dao.save(
+                state.copy(
+                    running = true,
+                    total = merged.size,
+                    origin = origin,
+                    host = host,
+                    jobsJson = mergedJson,
+                    jobProgress = 0f,
+                ),
+            )
+            launchWorker(host, mergedJson, origin)
         } else {
             val host = connectionRepository.observe().first().webUiBaseUrl()
             val jobsJson = encodeJobs(jobs)
@@ -188,6 +226,64 @@ class DefaultQueueRepository @Inject constructor(
             )
             launchWorker(host, jobsJson, origin)
         }
+    }
+
+    override suspend fun removeJob(jobId: String): Boolean {
+        val state = dao.get() ?: return false
+        val jobs = decodeJobs(state.jobsJson)
+        val index = jobs.indexOfFirst { it.id == jobId }
+        if (index < 0) return false
+        if (state.running && index == state.currentIndex) return false
+        val newJobs = jobs.filterIndexed { i, _ -> i != index }
+        val newResults = decodeResults(state.resultsJson).filter { it.jobId != jobId }
+        val newIndex = if (index < state.currentIndex) {
+            state.currentIndex - 1
+        } else {
+            minOf(state.currentIndex, newJobs.size)
+        }
+        dao.save(
+            state.copy(
+                jobsJson = encodeJobs(newJobs),
+                resultsJson = encodeResults(newResults),
+                total = newJobs.size,
+                currentIndex = newIndex,
+            ),
+        )
+        return true
+    }
+
+    override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean {
+        val state = dao.get() ?: return false
+        val jobs = decodeJobs(state.jobsJson)
+        if (jobs.isEmpty()) return false
+        val doneIds = decodeResults(state.resultsJson).map { it.jobId }.toSet()
+        val pendingSlots = jobs.mapIndexedNotNull { i, job -> i.takeIf { job.id !in doneIds } }
+        if (pendingSlots.isEmpty()) return false
+        val fromPos = pendingSlots.indexOfFirst { jobs[it].id == jobId }
+        if (fromPos < 0) return false
+        // Movable window: idle allows any pending slot; running pins the
+        // executing slot (and everything before it) — only later pending
+        // slots may be permuted, in place, so currentIndex stays valid.
+        val firstMovable = if (state.running) {
+            val execPos = pendingSlots.indexOf(state.currentIndex)
+            if (execPos < 0) return false
+            execPos + 1
+        } else {
+            0
+        }
+        if (fromPos < firstMovable) return false
+        if (toPendingIndex < firstMovable || toPendingIndex >= pendingSlots.size) return false
+        if (fromPos == toPendingIndex) return true
+        val windowJobs = pendingSlots.subList(firstMovable, pendingSlots.size)
+            .map { jobs[it] }.toMutableList()
+        val moving = windowJobs.removeAt(fromPos - firstMovable)
+        windowJobs.add(toPendingIndex - firstMovable, moving)
+        val newJobs = jobs.toMutableList()
+        pendingSlots.subList(firstMovable, pendingSlots.size).forEachIndexed { k, slot ->
+            newJobs[slot] = windowJobs[k]
+        }
+        dao.save(state.copy(jobsJson = encodeJobs(newJobs)))
+        return true
     }
 
     override suspend fun cancel() {
@@ -240,7 +336,7 @@ class DefaultQueueRepository @Inject constructor(
         }
     }
 
-    private fun launchWorker(host: String, jobsJson: String, origin: String) {
+    protected open fun launchWorker(host: String, jobsJson: String, origin: String) {
         val request = OneTimeWorkRequestBuilder<GenerationWorker>()
             .setInputData(
                 workDataOf(
