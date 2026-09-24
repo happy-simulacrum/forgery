@@ -20,6 +20,34 @@ android {
     buildFeatures { compose = true }
     composeOptions { }
 
+    // Release signing via sibling keystore; pass -PFORGERY_KEYSTORE_FILE=... (abs path),
+    // -PFORGERY_KEYSTORE_PASSWORD=... [-PFORGERY_KEY_PASSWORD=...] or env vars of the same
+    // names. Unsigned release when absent (never commit secrets here).
+    val releaseKeystoreFile: String =
+        (project.findProperty("FORGERY_KEYSTORE_FILE") as? String
+            ?: System.getenv("FORGERY_KEYSTORE_FILE") ?: "").trim()
+    val releaseKeystorePassword: String =
+        (project.findProperty("FORGERY_KEYSTORE_PASSWORD") as? String
+            ?: System.getenv("FORGERY_KEYSTORE_PASSWORD") ?: "").trim()
+    val releaseKeyPassword: String =
+        (project.findProperty("FORGERY_KEY_PASSWORD") as? String
+            ?: System.getenv("FORGERY_KEY_PASSWORD")
+            ?: releaseKeystorePassword).trim()
+    val hasReleaseKeystore: Boolean =
+        releaseKeystoreFile.isNotBlank() && releaseKeystorePassword.isNotBlank() &&
+            rootProject.file(releaseKeystoreFile).exists()
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(releaseKeystoreFile)
+                storePassword = releaseKeystorePassword
+                keyAlias = "google_play_key"
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -28,6 +56,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

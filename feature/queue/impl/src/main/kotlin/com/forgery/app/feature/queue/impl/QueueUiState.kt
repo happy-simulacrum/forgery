@@ -16,8 +16,12 @@ sealed interface QueueUiState {
         val pendingJobs: List<QueueJob>
             get() = jobs.filter { job -> results.none { it.jobId == job.id } }
 
+        /** DONE section, LIFO: newest finished on top (TO DO stays FIFO). */
         val completedJobs: List<QueueJob>
-            get() = jobs.filter { job -> results.any { it.jobId == job.id } }
+            get() {
+                val byId = jobs.associateBy { it.id }
+                return results.map { it.jobId }.distinct().reversed().mapNotNull { byId[it] }
+            }
 
         /** Job currently executing on the server; pinned (no delete/move). */
         val executingJobId: String?

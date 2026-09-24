@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
@@ -18,6 +19,7 @@ import androidx.work.ListenableWorker.Result as WorkResult
 import com.forgery.app.core.common.Result as ForgeResult
 import com.forgery.app.core.common.overallProgress
 import com.forgery.app.core.database.QueueStateDao
+import com.forgery.app.core.database.QueueTx
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import dagger.assisted.Assisted
@@ -50,6 +52,7 @@ class GenerationWorker @AssistedInject constructor(
     private val generationRepository: GenerationRepository,
     private val historyRepository: HistoryRepository,
     private val queueDao: QueueStateDao,
+    private val tx: QueueTx,
 ) : CoroutineWorker(appContext, params) {
 
     companion object {
@@ -66,7 +69,8 @@ class GenerationWorker @AssistedInject constructor(
         // Job list lives in the DB: it is re-read every iteration so jobs
         // appended mid-run (Generate while running) are picked up, and the
         // watchdog resume path continues from persisted currentIndex.
-        // Input extras are a fallback only.
+        // Input extras are a fallback only for a missing row (never a stale
+        // stand-in for a truncated list).
         val fallbackHost = inputData.getString(KEY_HOST).orEmpty()
         val fallbackJobs = decodeJobs(inputData.getString(KEY_JOBS).orEmpty())
 
@@ -77,8 +81,12 @@ class GenerationWorker @AssistedInject constructor(
             var finished = 0
             while (true) {
                 val state = queueDao.get()
-                val jobs = state?.let { decodeJobs(it.jobsJson) }?.takeIf { it.isNotEmpty() }
-                    ?: fallbackJobs
+                val dbJobs = state?.let { decodeJobs(it.jobsJson) }
+                val jobs = when {
+                    dbJobs != null && dbJobs.isNotEmpty() -> dbJobs
+                    state == null -> fallbackJobs
+                    else -> emptyList()
+                }
                 val host = state?.host?.takeIf { it.isNotBlank() } ?: fallbackHost
                 val index = state?.currentIndex ?: 0
                 if (state?.running != true || host.isBlank() || jobs.isEmpty() ||
@@ -86,10 +94,10 @@ class GenerationWorker @AssistedInject constructor(
                 ) {
                     break
                 }
-                runJob(host, jobs[index], index, jobs.size)
+                runJob(state, host, jobs[index], index, jobs.size)
                 finished = index + 1
             }
-            queueDao.get()?.let { queueDao.save(it.copy(running = false)) }
+            tx.run { queueDao.get()?.let { queueDao.save(it.copy(running = false)) } }
             setForeground(createForegroundInfo("Batch Complete", "$finished job(s) finished.", 100))
             WorkResult.success()
         } catch (e: CancellationException) {
@@ -104,13 +112,25 @@ class GenerationWorker @AssistedInject constructor(
     }
 
     private suspend fun runJob(
+        snap: com.forgery.app.core.database.QueueStateEntity?,
         host: String,
         job: QueueJob,
         index: Int,
         total: Int,
     ): QueueResult {
-        queueDao.get()?.let { queueDao.save(it.copy(jobProgress = 0f)) }
-        updateProgress("Batch Running", "Job ${index + 1}/$total: preparing…", overallProgress(index, total, 0f))
+        // Batch-scoped labels: the launched batch (TODO at start, no DONE
+        // prefix). Legacy rows mid-flight during upgrade carry zeroes — fall
+        // back to positional labels then.
+        val useBatch = snap != null && snap.batchTotal > 0
+        val labelIndex = if (useBatch) snap.batchDone + 1 else index + 1
+        val labelTotal = if (useBatch) snap.batchTotal else total
+        fun batchPct(p: Float) = overallProgress(
+            if (useBatch) snap!!.batchDone else index,
+            labelTotal,
+            p,
+        )
+        queueDao.updateJobProgress(0f)
+        updateProgress("Batch Running", "Job $labelIndex/$labelTotal: preparing…", batchPct(0f))
         return try {
             val isInpaint = job.mode == "inp"
             when (val aligned = generationRepository.ensureModel(job.modelTitle, isInpaint)) {
@@ -128,6 +148,8 @@ class GenerationWorker @AssistedInject constructor(
 
             val payload = jsonStringToPayload(job.payloadJson)
             // Progress poller, best-effort (legacy: 3s interval thread).
+            // Single-column atomic update: never reads the row, so it cannot
+            // resurrect jobs dropped by a concurrent clear.
             val poller = kotlinx.coroutines.CoroutineScope(coroutineContext).launch {
                 while (isActive) {
                     val p = (generationRepository.progress()
@@ -135,14 +157,10 @@ class GenerationWorker @AssistedInject constructor(
                     if (p > 0) {
                         updateProgress(
                             "Batch Running",
-                            "Job ${index + 1}/$total: ${(p * 100).toInt()}%",
-                            overallProgress(index, total, p.toFloat()),
+                            "Job $labelIndex/$labelTotal: ${(p * 100).toInt()}%",
+                            batchPct(p.toFloat()),
                         )
-                        val frac = p.toFloat().coerceIn(0f, 1f)
-                        val cur = queueDao.get()
-                        if (cur != null && kotlin.math.abs(cur.jobProgress - frac) > 0.01f) {
-                            queueDao.save(cur.copy(jobProgress = frac))
-                        }
+                        queueDao.updateJobProgress(p.toFloat().coerceIn(0f, 1f))
                     }
                     kotlinx.coroutines.delay(3_000)
                 }
@@ -191,24 +209,28 @@ class GenerationWorker @AssistedInject constructor(
         error: String?,
     ): QueueResult {
         val result = QueueResult(job.id, job.desc, files, error)
-        val state = queueDao.get()
-        if (state != null) {
-            val prev = if (state.resultsJson.isBlank() || state.resultsJson == "[]") {
-                emptyList()
-            } else {
-                WorkerJson.decodeFromString(ListSerializer(QueueResult.serializer()), state.resultsJson)
+        tx.run {
+            val state = queueDao.get()
+            if (state != null) {
+                // Id-based merge against freshly-read state (see withResult):
+                // the loop-top index may be minutes stale after the network
+                // call, and must never overwrite a concurrent clear/remove.
+                val updated = state.withResult(job.id, result, error != null)
+                if (updated != null) {
+                    queueDao.save(updated)
+                    Log.d(
+                        QueueLogTag,
+                        "record ${job.id} at=${updated.currentIndex - 1} batch=${updated.batchDone}/${updated.batchTotal}",
+                    )
+                } else {
+                    repairRunningPointer(
+                        state,
+                        decodeQueueJobs(state.jobsJson),
+                        decodeQueueResults(state.resultsJson).map { it.jobId }.toSet(),
+                    )?.let { queueDao.save(it) }
+                    Log.d(QueueLogTag, "record ${job.id} skipped (duplicate or vanished)")
+                }
             }
-            val next = prev + result
-            queueDao.save(
-                state.copy(
-                    currentIndex = index + 1,
-                    running = if (error != null) false else state.running,
-                    jobProgress = 0f,
-                    resultsJson = WorkerJson.encodeToString(
-                        ListSerializer(QueueResult.serializer()), next,
-                    ),
-                ),
-            )
         }
         return result
     }
@@ -226,7 +248,7 @@ class GenerationWorker @AssistedInject constructor(
     }
 
     private suspend fun persistRunningFlag(running: Boolean) {
-        queueDao.get()?.let { queueDao.save(it.copy(running = running)) }
+        tx.run { queueDao.get()?.let { queueDao.save(it.copy(running = running)) } }
     }
 
     // -- files --

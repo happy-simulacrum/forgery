@@ -150,12 +150,12 @@ private fun QueueContent(
                 Column(Modifier.padding(16.dp)) {
                     Text("QUEUE", style = MaterialTheme.typography.titleSmall)
                     if (snapshot?.running == true) {
-                        Text("Running ${snapshot.currentIndex}/${snapshot.total} (${snapshot.origin})")
+                        Text("Running ${snapshot.batchDone}/${snapshot.batchTotal} (${snapshot.origin})")
                         val imageProgress = snapshot.jobProgress.coerceIn(0f, 1f)
                         val imagePercent = (imageProgress * 100).toInt()
                         val queuePercent = overallProgress(
-                            snapshot.currentIndex,
-                            snapshot.total,
+                            snapshot.batchDone,
+                            snapshot.batchTotal,
                             imageProgress,
                         )
                         Text("Image — $imagePercent%")

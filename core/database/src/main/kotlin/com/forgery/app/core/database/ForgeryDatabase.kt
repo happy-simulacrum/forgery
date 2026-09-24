@@ -46,6 +46,8 @@ data class QueueStateEntity(
     val jobsJson: String,
     val resultsJson: String,
     val jobProgress: Float = 0f,
+    val batchTotal: Int = 0,
+    val batchDone: Int = 0,
 )
 
 @Dao
@@ -106,11 +108,14 @@ interface QueueStateDao {
 
     @Query("DELETE FROM queue_state")
     suspend fun clear()
+
+    @Query("UPDATE queue_state SET jobProgress = :value WHERE id = 1 AND ABS(jobProgress - :value) > 0.01")
+    suspend fun updateJobProgress(value: Float)
 }
 
 @Database(
     entities = [HistoryEntity::class, ComfyTemplateEntity::class, StyleEntity::class, QueueStateEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class ForgeryDatabase : RoomDatabase() {
@@ -123,5 +128,12 @@ abstract class ForgeryDatabase : RoomDatabase() {
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE queue_state ADD COLUMN jobProgress REAL NOT NULL DEFAULT 0")
+    }
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE queue_state ADD COLUMN batchTotal INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE queue_state ADD COLUMN batchDone INTEGER NOT NULL DEFAULT 0")
     }
 }

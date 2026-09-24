@@ -6,6 +6,9 @@ plugins {
 
 android {
     namespace = "com.forgery.app.core.data"
+    // Local unit tests run against stub android.jar: android.util.Log calls
+    // (queue diagnostics) return defaults instead of throwing.
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 dependencies {

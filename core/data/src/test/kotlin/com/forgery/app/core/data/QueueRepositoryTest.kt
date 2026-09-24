@@ -5,6 +5,7 @@ import android.content.ContextWrapper
 import androidx.work.ExistingWorkPolicy
 import com.forgery.app.core.database.QueueStateDao
 import com.forgery.app.core.database.QueueStateEntity
+import com.forgery.app.core.database.QueueTx
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
@@ -34,9 +35,20 @@ private class FakeQueueStateDao(initial: QueueStateEntity? = null) : QueueStateD
         saves++
         this.state.value = state
     }
+    override suspend fun updateJobProgress(value: Float) {
+        val cur = state.value ?: return
+        if (kotlin.math.abs(cur.jobProgress - value) > 0.01f) {
+            saves++
+            state.value = cur.copy(jobProgress = value)
+        }
+    }
     override suspend fun clear() {
         state.value = null
     }
+}
+
+private class FakeTx : QueueTx {
+    override suspend fun <T> run(block: suspend () -> T): T = block()
 }
 
 private class FakeQueueConnectionRepo : ConnectionRepository {
@@ -96,6 +108,8 @@ private fun queueState(
     currentIndex: Int,
     jobs: List<QueueJob>,
     results: List<QueueResult>,
+    batchTotal: Int = 0,
+    batchDone: Int = 0,
 ) = QueueStateEntity(
     running = running,
     currentIndex = currentIndex,
@@ -104,6 +118,8 @@ private fun queueState(
     host = "http://127.0.0.1:7860",
     jobsJson = TestQueueJson.encodeToString(ListSerializer(QueueJob.serializer()), jobs),
     resultsJson = TestQueueJson.encodeToString(ListSerializer(QueueResult.serializer()), results),
+    batchTotal = batchTotal,
+    batchDone = batchDone,
 )
 
 private fun decodeTestJobs(raw: String): List<QueueJob> =
@@ -118,14 +134,14 @@ class QueueRepositoryTest {
     val dispatcherRule = TestDispatcherRule()
 
     private fun repo(dao: FakeQueueStateDao) =
-        DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo())
+        DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo(), FakeTx())
 
     /**
      * Test double that records worker launches instead of touching WorkManager
      * (unavailable under local unit tests).
      */
     private class LaunchRecordingRepository(dao: FakeQueueStateDao) :
-        DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo()) {
+        DefaultQueueRepository(stubContext(), dao, FakeQueueConnectionRepo(), FakeTx()) {
         data class Launch(val host: String, val jobsJson: String, val origin: String, val policy: ExistingWorkPolicy)
         val launches = mutableListOf<Launch>()
         override fun launchWorker(host: String, jobsJson: String, origin: String, policy: ExistingWorkPolicy) {
@@ -149,7 +165,8 @@ class QueueRepositoryTest {
         assertEquals(listOf("3"), decodeTestJobs(saved.jobsJson).map { it.id })
         assertEquals("[]", saved.resultsJson)
         assertEquals(1, saved.total)
-        assertEquals(1, saved.currentIndex)
+        // Idle: everything left is pending, pointer restarts at head.
+        assertEquals(0, saved.currentIndex)
         assertFalse(saved.running)
         assertEquals("single", saved.origin)
         assertEquals("http://127.0.0.1:7860", saved.host)
@@ -704,5 +721,231 @@ class QueueRepositoryTest {
         val empty = FakeQueueStateDao(null)
         assertFalse(repo(empty).moveJob("1", 0))
         assertNull(empty.get())
+    }
+
+    @Test
+    fun `start re-derives stale pointer and freezes batch without DONE`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                // Stale: points at the already-done job instead of job 2.
+                currentIndex = 0,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.start()
+
+        val saved = dao.get()!!
+        assertEquals(1, saved.currentIndex)
+        assertEquals(2, saved.batchTotal)
+        assertEquals(0, saved.batchDone)
+        assertTrue(saved.running)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `start past-the-end pointer self-heals to first pending`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = false,
+                // Wedged: pointer past end after an older clear; job 3 stuck.
+                currentIndex = 2,
+                jobs = listOf(queueJob("1"), queueJob("2")),
+                results = listOf(queueResult("1")),
+            ),
+        )
+        val repository = LaunchRecordingRepository(dao)
+        repository.start()
+
+        val saved = dao.get()!!
+        assertTrue(saved.running)
+        assertEquals(1, saved.currentIndex)
+        assertEquals(1, saved.batchTotal)
+        assertEquals(1, repository.launches.size)
+    }
+
+    @Test
+    fun `clearCompleted running tracks executing job by id`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 2,
+                jobs = listOf(
+                    queueJob("1"),
+                    queueJob("2"),
+                    queueJob("3"),
+                    queueJob("4"),
+                    queueJob("5"),
+                ),
+                results = listOf(queueResult("1"), queueResult("2")),
+                batchTotal = 5,
+                batchDone = 2,
+            ),
+        )
+        repo(dao).clearCompleted()
+
+        val saved = dao.get()!!
+        // Executing job 3 kept its slot: no slide-down, batch untouched.
+        assertEquals(listOf("3", "4", "5"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(0, saved.currentIndex)
+        assertTrue(saved.running)
+        assertEquals(3, saved.total)
+        assertEquals(5, saved.batchTotal)
+        assertEquals(2, saved.batchDone)
+    }
+
+    @Test
+    fun `withResult appends by id and advances batch`() = runTest {
+        val state = queueState(
+            running = true,
+            currentIndex = 1,
+            jobs = listOf(queueJob("1"), queueJob("2")),
+            results = listOf(queueResult("1")),
+            batchTotal = 2,
+            batchDone = 1,
+        )
+        val updated = state.withResult("2", queueResult("2"), failed = false)!!
+
+        assertEquals(2, updated.currentIndex)
+        assertEquals(listOf("1", "2"), decodeTestResults(updated.resultsJson).map { it.jobId })
+        assertEquals(2, updated.batchDone)
+        assertEquals(2, updated.batchTotal)
+        assertTrue(updated.running)
+        assertEquals(listOf("1", "2"), decodeTestJobs(updated.jobsJson).map { it.id })
+    }
+
+    @Test
+    fun `withResult failure stops batch but still counts done`() = runTest {
+        val state = queueState(
+            running = true,
+            currentIndex = 0,
+            jobs = listOf(queueJob("1")),
+            results = emptyList(),
+            batchTotal = 1,
+            batchDone = 0,
+        )
+        val failed = QueueResult(jobId = "1", desc = "desc 1", files = emptyList(), error = "boom")
+        val updated = state.withResult("1", failed, failed = true)!!
+
+        assertEquals(1, updated.currentIndex)
+        assertEquals(1, updated.batchDone)
+        assertEquals("boom", decodeTestResults(updated.resultsJson).single().error)
+        assertFalse(updated.running)
+    }
+
+    @Test
+    fun `withResult ignores duplicates and vanished jobs`() = runTest {
+        val dup = queueState(
+            running = true,
+            currentIndex = 1,
+            jobs = listOf(queueJob("1"), queueJob("2")),
+            results = listOf(queueResult("1")),
+            batchTotal = 2,
+            batchDone = 1,
+        )
+        assertNull(dup.withResult("1", queueResult("1"), failed = false))
+
+        val truncated = queueState(
+            running = true,
+            currentIndex = 1,
+            jobs = listOf(queueJob("1"), queueJob("2")),
+            results = listOf(queueResult("1")),
+        )
+        // Job 3 was cleared mid-flight: no resurrection, no pointer move.
+        assertNull(truncated.withResult("3", queueResult("3"), failed = false))
+    }
+
+    @Test
+    fun `record after clearPending keeps truncation and appends current`() = runTest {
+        // Running clear dropped the tail; the in-flight job finishes after.
+        val afterClear = queueState(
+            running = true,
+            currentIndex = 1,
+            jobs = listOf(queueJob("1"), queueJob("2")),
+            results = listOf(queueResult("1")),
+            batchTotal = 2,
+            batchDone = 1,
+        )
+        val updated = afterClear.withResult("2", queueResult("2"), failed = false)!!
+
+        assertEquals(listOf("1", "2"), decodeTestJobs(updated.jobsJson).map { it.id })
+        assertEquals(listOf("1", "2"), decodeTestResults(updated.resultsJson).map { it.jobId })
+        assertEquals(2, updated.currentIndex)
+        assertEquals(2, updated.batchDone)
+    }
+
+    @Test
+    fun `clearPending running shrinks batch to exact close`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 1,
+                jobs = listOf(queueJob("1"), queueJob("2"), queueJob("3"), queueJob("4")),
+                results = listOf(queueResult("1")),
+                batchTotal = 4,
+                batchDone = 1,
+            ),
+        )
+        repo(dao).clearPending()
+
+        val saved = dao.get()!!
+        assertEquals(listOf("1", "2"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(1, saved.currentIndex)
+        // Two upcoming dropped: batch 4 -> 2, closes at 2/2 after job 2.
+        assertEquals(2, saved.batchTotal)
+        assertEquals(1, saved.batchDone)
+        assertTrue(saved.running)
+    }
+
+    @Test
+    fun `removeJob future shrinks batch, past DONE leaves it`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 2,
+                jobs = listOf(
+                    queueJob("1"),
+                    queueJob("2"),
+                    queueJob("3"),
+                    queueJob("4"),
+                ),
+                results = listOf(queueResult("1"), queueResult("2")),
+                batchTotal = 4,
+                batchDone = 2,
+            ),
+        )
+        val repository = repo(dao)
+        assertTrue(repository.removeJob("4"))
+        var saved = dao.get()!!
+        assertEquals(3, saved.batchTotal)
+        assertEquals(2, saved.batchDone)
+
+        assertTrue(repository.removeJob("1"))
+        saved = dao.get()!!
+        assertEquals(listOf("2", "3"), decodeTestJobs(saved.jobsJson).map { it.id })
+        assertEquals(3, saved.batchTotal)
+        assertEquals(1, saved.currentIndex)
+    }
+
+    @Test
+    fun `stage while running grows batch total`() = runTest {
+        val dao = FakeQueueStateDao(
+            queueState(
+                running = true,
+                currentIndex = 0,
+                jobs = listOf(queueJob("1")),
+                results = emptyList(),
+                batchTotal = 1,
+                batchDone = 0,
+            ),
+        )
+        repo(dao).stage(listOf(queueJob("2")), "queue")
+
+        val saved = dao.get()!!
+        assertEquals(2, saved.batchTotal)
+        assertEquals(0, saved.batchDone)
+        assertEquals(0, saved.currentIndex)
     }
 }

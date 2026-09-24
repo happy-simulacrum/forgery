@@ -16,11 +16,15 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): ForgeryDatabase =
         Room.databaseBuilder(ctx, ForgeryDatabase::class.java, "forgery.db")
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
 
     @Provides fun provideHistoryDao(db: ForgeryDatabase) = db.historyDao()
     @Provides fun provideComfyDao(db: ForgeryDatabase) = db.comfyTemplateDao()
     @Provides fun provideStyleDao(db: ForgeryDatabase) = db.styleDao()
     @Provides fun provideQueueDao(db: ForgeryDatabase) = db.queueStateDao()
+
+    @Provides
+    @Singleton
+    fun provideQueueTx(db: ForgeryDatabase): QueueTx = RoomQueueTx(db)
 }

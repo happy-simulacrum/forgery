@@ -130,6 +130,8 @@ data class QueueSnapshot(
     val origin: String,
     val stopReason: String?,
     val jobProgress: Float = 0f,
+    val batchTotal: Int = 0,
+    val batchDone: Int = 0,
 )
 
 @Serializable

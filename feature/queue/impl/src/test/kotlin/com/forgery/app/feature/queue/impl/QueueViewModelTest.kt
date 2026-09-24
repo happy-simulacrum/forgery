@@ -152,7 +152,7 @@ class QueueViewModelTest {
     }
 
     @Test
-    fun `pending and completed selectors split jobs preserving order`() = runTest {
+    fun `pending FIFO and completed LIFO split jobs`() = runTest {
         val jobs = listOf(
             QueueJob("1", "one", "txt", "m", "{}"),
             QueueJob("2", "two", "txt", "m", "{}"),
@@ -165,7 +165,7 @@ class QueueViewModelTest {
         val vm = QueueViewModel(FakeQueueRepository(jobs = jobs, results = results))
         val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
         assertEquals(listOf("3"), state.pendingJobs.map { it.id })
-        assertEquals(listOf("1", "2"), state.completedJobs.map { it.id })
+        assertEquals(listOf("2", "1"), state.completedJobs.map { it.id })
     }
 
     @Test
@@ -196,6 +196,24 @@ class QueueViewModelTest {
         assertTrue(state.pendingJobs.isNotEmpty())
         assertEquals(listOf("2"), state.pendingJobs.map { it.id })
         assertEquals(listOf("1"), state.completedJobs.map { it.id })
+    }
+
+    @Test
+    fun `completed is LIFO newest finished first`() = runTest {
+        val jobs = listOf(
+            QueueJob("1", "one", "txt", "m", "{}"),
+            QueueJob("2", "two", "txt", "m", "{}"),
+            QueueJob("3", "three", "txt", "m", "{}"),
+        )
+        val results = listOf(
+            QueueResult("1", "one", listOf("/a.png"), null),
+            QueueResult("2", "two", listOf("/b.png"), null),
+            QueueResult("3", "three", listOf("/c.png"), null),
+        )
+        val vm = QueueViewModel(FakeQueueRepository(jobs = jobs, results = results))
+        val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
+        assertEquals(listOf("3", "2", "1"), state.completedJobs.map { it.id })
+        assertTrue(state.pendingJobs.isEmpty())
     }
 
     @Test
@@ -390,6 +408,8 @@ class QueueViewModelTest {
         assertEquals(0.5f, snapshot?.jobProgress)
         assertEquals(1, snapshot?.currentIndex)
         assertEquals(4, snapshot?.total)
+        assertEquals(0, snapshot?.batchTotal)
+        assertEquals(0, snapshot?.batchDone)
         // Screen computes Queue M% as overallProgress(currentIndex, total, jobProgress).
         val expectedQueue = overallProgress(1, 4, 0.5f)
         assertEquals(
