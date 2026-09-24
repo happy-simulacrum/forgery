@@ -1,6 +1,7 @@
 package com.forgery.app.feature.analyze.impl
 
 import androidx.lifecycle.SavedStateHandle
+import com.forgery.app.core.common.FileFormat
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.PromptDraftRepository
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -56,6 +58,24 @@ private fun pngWithText(text: String): ByteArray {
     val payload = "parameters".toByteArray(Charsets.ISO_8859_1) +
         byteArrayOf(0) + text.toByteArray(Charsets.ISO_8859_1)
     out.write(chunk("tEXt", payload))
+    out.write(chunk("IEND", ByteArray(0)))
+    return out.toByteArray()
+}
+
+private fun pngWithoutText(): ByteArray {
+    val out = ByteArrayOutputStream()
+    out.write(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
+    val ihdr = ByteArrayOutputStream()
+    DataOutputStream(ihdr).apply {
+        writeInt(1)
+        writeInt(1)
+        writeByte(8)
+        writeByte(2)
+        writeByte(0)
+        writeByte(0)
+        writeByte(0)
+    }
+    out.write(chunk("IHDR", ihdr.toByteArray()))
     out.write(chunk("IEND", ByteArray(0)))
     return out.toByteArray()
 }
@@ -241,5 +261,48 @@ class AnalyzeViewModelTest {
         )
         assertTrue(hr.saved.isEmpty())
         assertEquals(RestoredParams(), handoff.consume())
+    }
+
+    @Test
+    fun `fileInfo present on success`() = runTest {
+        val bytes = pngWithText("a cat, detailed\nNegative prompt: blurry\nSteps: 20")
+        val state = viewModel(bytes).pickAndWait { it.prompt.isNotBlank() }
+        val fi = state.fileInfo
+        assertNotNull(fi)
+        assertEquals(FileFormat.PNG, fi!!.format)
+        assertEquals(bytes.size.toLong(), fi.sizeBytes)
+        assertEquals(1, fi.width)
+        assertEquals(1, fi.height)
+        assertEquals(8, fi.bitDepth)
+        assertEquals(2, fi.colorType)
+    }
+
+    @Test
+    fun `fileInfo present without generative metadata`() = runTest {
+        val vm = viewModel(pngWithoutText())
+        vm.uiState.success()
+        vm.onAction(AnalyzeAction.PickResult("content://x"))
+        val state = vm.uiState.first {
+            it is AnalyzeUiState.Success && it.statusMessage != null
+        } as AnalyzeUiState.Success
+        assertEquals("No generation metadata found.", state.statusMessage)
+        val fi = state.fileInfo
+        assertNotNull(fi)
+        assertEquals(FileFormat.PNG, fi!!.format)
+        assertEquals(1, fi.width)
+        assertEquals(1, fi.height)
+    }
+
+    @Test
+    fun `clear resets fileInfo`() = runTest {
+        val vm = viewModel(pngWithText("a cat\nNegative prompt: blurry\nSteps: 20"))
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        vm.onAction(AnalyzeAction.Clear)
+        val cleared = vm.uiState.first {
+            it is AnalyzeUiState.Success && it.uri == null
+        } as AnalyzeUiState.Success
+        assertNull(cleared.fileInfo)
+        assertNull(cleared.uri)
+        assertEquals("", cleared.prompt)
     }
 }

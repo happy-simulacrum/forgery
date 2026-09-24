@@ -1,5 +1,6 @@
 package com.forgery.app.feature.analyze.impl
 
+import com.forgery.app.core.common.FileInfo
 import com.forgery.app.core.common.PngMetadata
 
 sealed interface AnalyzeUiState {
@@ -14,6 +15,7 @@ sealed interface AnalyzeUiState {
         val noMetadata: Boolean = false,
         val statusMessage: String? = null,
         val settingsSummary: String? = null,
+        val fileInfo: FileInfo? = null,
     ) : AnalyzeUiState
 
     data class Error(val message: String) : AnalyzeUiState

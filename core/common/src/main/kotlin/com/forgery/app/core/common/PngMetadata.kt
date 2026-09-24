@@ -3,6 +3,7 @@ package com.forgery.app.core.common
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.util.zip.Inflater
+import kotlin.math.round
 
 /**
  * PNG metadata reader — ports `readPngMetadata` (utils.js): walks PNG chunks
@@ -14,11 +15,75 @@ data class PngMetadata(
     val entries: Map<String, String>,
 )
 
+enum class FileFormat {
+    PNG,
+    JPEG,
+    WEBP,
+    UNKNOWN,
+}
+
+data class FileInfo(
+    val format: FileFormat,
+    val sizeBytes: Long,
+    val width: Int?,
+    val height: Int?,
+    val dpiX: Double?,
+    val dpiY: Double?,
+    val bitDepth: Int? = null,
+    val colorType: Int? = null,
+)
+
+private data class IhdrData(
+    val width: Int,
+    val height: Int,
+    val bitDepth: Int,
+    val colorType: Int,
+)
+
+private data class PhysData(
+    val unit: Int,
+    val ppux: Long,
+    val ppuy: Long,
+)
+
+private fun parseIhdr(data: ByteArray): IhdrData? {
+    if (data.size < 13) return null
+    val width = ((data[0].toInt() and 0xFF) shl 24) or
+        ((data[1].toInt() and 0xFF) shl 16) or
+        ((data[2].toInt() and 0xFF) shl 8) or
+        (data[3].toInt() and 0xFF)
+    val height = ((data[4].toInt() and 0xFF) shl 24) or
+        ((data[5].toInt() and 0xFF) shl 16) or
+        ((data[6].toInt() and 0xFF) shl 8) or
+        (data[7].toInt() and 0xFF)
+    val bitDepth = data[8].toInt() and 0xFF
+    val colorType = data[9].toInt() and 0xFF
+    return IhdrData(width, height, bitDepth, colorType)
+}
+
+private fun parsePhys(data: ByteArray): PhysData? {
+    if (data.size < 9) return null
+    val ppux = ((data[0].toLong() and 0xFF) shl 24) or
+        ((data[1].toLong() and 0xFF) shl 16) or
+        ((data[2].toLong() and 0xFF) shl 8) or
+        (data[3].toLong() and 0xFF)
+    val ppuy = ((data[4].toLong() and 0xFF) shl 24) or
+        ((data[5].toLong() and 0xFF) shl 16) or
+        ((data[6].toLong() and 0xFF) shl 8) or
+        (data[7].toLong() and 0xFF)
+    val unit = data[8].toInt() and 0xFF
+    return PhysData(unit, ppux, ppuy)
+}
+
+private fun ppmToDpi(ppm: Long): Double = round(ppm * 0.0254 * 10.0) / 10.0
+
 fun readPngMetadata(bytes: ByteArray): PngMetadata? {
     if (bytes.size < 8) return null
     val signature = byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10)
     if (!bytes.copyOf(8).contentEquals(signature)) return null
     val entries = linkedMapOf<String, String>()
+    var ihdr: IhdrData? = null
+    var phys: PhysData? = null
     val input = DataInputStream(ByteArrayInputStream(bytes, 8, bytes.size - 8))
     try {
         while (input.available() > 0) {
@@ -32,6 +97,8 @@ fun readPngMetadata(bytes: ByteArray): PngMetadata? {
             if (length > 0) input.readFully(data)
             input.readInt() // CRC, ignored
             when (type) {
+                "IHDR" -> if (ihdr == null) ihdr = parseIhdr(data)
+                "pHYs" -> if (phys == null) phys = parsePhys(data)
                 "tEXt" -> parseKeywordText(data)?.let { entries[it.first] = it.second }
                 "zTXt" -> parseCompressedText(data)?.let { entries[it.first] = it.second }
                 "iTXt" -> parseInternationalText(data)?.let { entries[it.first] = it.second }
@@ -41,8 +108,164 @@ fun readPngMetadata(bytes: ByteArray): PngMetadata? {
     } catch (_: Exception) {
         return null
     }
+    // IHDR/pHYs are captured in the same chunk walk for fileInfo(); text result is unchanged.
+    @Suppress("UNUSED_VARIABLE")
+    val fileHeaders = ihdr to phys
     if (entries.isEmpty()) return PngMetadata(parameters = null, entries = emptyMap())
     return PngMetadata(parameters = entries["parameters"], entries = entries)
+}
+
+/**
+ * File-level info by signature: PNG dimensions/DPI from IHDR/pHYs,
+ * JPEG dimensions from SOF0/1/2 scan, WebP without dimension parsing.
+ * Returns null only when [bytes] is empty.
+ */
+fun fileInfo(bytes: ByteArray): FileInfo? {
+    if (bytes.isEmpty()) return null
+    val sizeBytes = bytes.size.toLong()
+    val format = detectFormat(bytes)
+    return when (format) {
+        FileFormat.PNG -> {
+            val (ihdr, phys) = parsePngHeaders(bytes)
+            val dpiX = if (phys != null && phys.unit == 1) ppmToDpi(phys.ppux) else null
+            val dpiY = if (phys != null && phys.unit == 1) ppmToDpi(phys.ppuy) else null
+            FileInfo(
+                format = FileFormat.PNG,
+                sizeBytes = sizeBytes,
+                width = ihdr?.width,
+                height = ihdr?.height,
+                dpiX = dpiX,
+                dpiY = dpiY,
+                bitDepth = ihdr?.bitDepth,
+                colorType = ihdr?.colorType,
+            )
+        }
+        FileFormat.JPEG -> {
+            val dims = parseJpegDimensions(bytes)
+            FileInfo(
+                format = FileFormat.JPEG,
+                sizeBytes = sizeBytes,
+                width = dims?.first,
+                height = dims?.second,
+                dpiX = null,
+                dpiY = null,
+            )
+        }
+        FileFormat.WEBP, FileFormat.UNKNOWN -> FileInfo(
+            format = format,
+            sizeBytes = sizeBytes,
+            width = null,
+            height = null,
+            dpiX = null,
+            dpiY = null,
+        )
+    }
+}
+
+private fun detectFormat(bytes: ByteArray): FileFormat {
+    if (isPng(bytes)) return FileFormat.PNG
+    if (isJpeg(bytes)) return FileFormat.JPEG
+    if (isWebp(bytes)) return FileFormat.WEBP
+    return FileFormat.UNKNOWN
+}
+
+private fun isPng(bytes: ByteArray): Boolean {
+    if (bytes.size < 8) return false
+    val signature = byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10)
+    return bytes.copyOf(8).contentEquals(signature)
+}
+
+private fun isJpeg(bytes: ByteArray): Boolean {
+    if (bytes.size < 2) return false
+    return (bytes[0].toInt() and 0xFF) == 0xFF && (bytes[1].toInt() and 0xFF) == 0xD8
+}
+
+private fun isWebp(bytes: ByteArray): Boolean {
+    if (bytes.size < 12) return false
+    val riff = String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF"
+    val webp = String(bytes, 8, 4, Charsets.US_ASCII) == "WEBP"
+    return riff && webp
+}
+
+/** Lightweight PNG header scan: IHDR + pHYs only, no text decompression. */
+private fun parsePngHeaders(bytes: ByteArray): Pair<IhdrData?, PhysData?> {
+    var ihdr: IhdrData? = null
+    var phys: PhysData? = null
+    try {
+        if (!isPng(bytes)) return null to null
+        var pos = 8
+        while (pos + 8 <= bytes.size) {
+            val length = ((bytes[pos].toInt() and 0xFF) shl 24) or
+                ((bytes[pos + 1].toInt() and 0xFF) shl 16) or
+                ((bytes[pos + 2].toInt() and 0xFF) shl 8) or
+                (bytes[pos + 3].toInt() and 0xFF)
+            if (length < 0 || length > 32 * 1024 * 1024) break
+            if (pos + 8 + length + 4 > bytes.size) break
+            val type = String(bytes, pos + 4, 4, Charsets.US_ASCII)
+            val dataStart = pos + 8
+            when (type) {
+                "IHDR" -> if (ihdr == null && length >= 13) {
+                    ihdr = parseIhdr(bytes.copyOfRange(dataStart, dataStart + length))
+                }
+                "pHYs" -> if (phys == null && length >= 9) {
+                    phys = parsePhys(bytes.copyOfRange(dataStart, dataStart + length))
+                }
+                "IEND" -> break
+            }
+            pos = dataStart + length + 4
+            if (ihdr != null && phys != null) break
+        }
+    } catch (_: Exception) {
+        // Return whatever was parsed before the failure.
+    }
+    return ihdr to phys
+}
+
+/**
+ * Scans JPEG markers until SOF0/1/2 (FF C0/C1/C2). Markers without length
+ * (SOI, RSTn, TEM) are skipped, EOI/SOS stop the scan. Returns width to height.
+ */
+private fun parseJpegDimensions(bytes: ByteArray): Pair<Int, Int>? {
+    if (bytes.size < 4) return null
+    if (!isJpeg(bytes)) return null
+    var pos = 2
+    try {
+        while (pos + 1 < bytes.size) {
+            if ((bytes[pos].toInt() and 0xFF) != 0xFF) {
+                pos++
+                continue
+            }
+            var markerPos = pos + 1
+            while (markerPos < bytes.size && (bytes[markerPos].toInt() and 0xFF) == 0xFF) {
+                markerPos++
+            }
+            if (markerPos >= bytes.size) break
+            val marker = bytes[markerPos].toInt() and 0xFF
+            pos = markerPos + 1
+            if (marker == 0xD8 || marker in 0xD0..0xD7 || marker == 0x01) {
+                continue
+            }
+            if (marker == 0xD9 || marker == 0x00) {
+                if (marker == 0xD9) break else continue
+            }
+            if (pos + 1 >= bytes.size) break
+            val len = ((bytes[pos].toInt() and 0xFF) shl 8) or (bytes[pos + 1].toInt() and 0xFF)
+            if (len < 2) break
+            if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) {
+                if (len < 8) break
+                if (pos + 7 >= bytes.size) break
+                val h = ((bytes[pos + 3].toInt() and 0xFF) shl 8) or (bytes[pos + 4].toInt() and 0xFF)
+                val w = ((bytes[pos + 5].toInt() and 0xFF) shl 8) or (bytes[pos + 6].toInt() and 0xFF)
+                if (w == 0 || h == 0) return null
+                return w to h
+            }
+            if (marker == 0xDA) break
+            pos += len
+        }
+    } catch (_: Exception) {
+        return null
+    }
+    return null
 }
 
 private fun parseKeywordText(data: ByteArray): Pair<String, String>? {

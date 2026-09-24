@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+# Signed release pipeline: :app:assembleRelease + :app:bundleRelease.
+# Passwords come from local.properties (RELEASE_KEYSTORE_FILE/PASSWORD,
+# optional RELEASE_KEY_PASSWORD, same names as android_crm) with
+# FORGERY_KEYSTORE_FILE/PASSWORD/KEY_PASSWORD env override. Nothing secret
+# is committed (local.properties is gitignored). Fail-fast when the key is
+# missing — a silent unsigned release is worse than no release.
+pick() {
+    (grep -E "^$1=" local.properties 2>/dev/null || true) \
+        | tail -1 | cut -d= -f2- | tr -d '\r' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+keystore_file="${FORGERY_KEYSTORE_FILE:-}"
+keystore_pass="${FORGERY_KEYSTORE_PASSWORD:-}"
+key_pass="${FORGERY_KEY_PASSWORD:-}"
+if [ -f local.properties ]; then
+    [ -n "$keystore_file" ] || keystore_file="$(pick RELEASE_KEYSTORE_FILE)"
+    [ -n "$keystore_pass" ] || keystore_pass="$(pick RELEASE_KEYSTORE_PASSWORD)"
+    [ -n "$key_pass" ] || key_pass="$(pick RELEASE_KEY_PASSWORD)"
+fi
+[ -n "$key_pass" ] || key_pass="$keystore_pass"
+# Resolve repo-relative keystore paths against the repo root (we cd'd there).
+if [ -n "$keystore_file" ] && [ "${keystore_file#/}" = "$keystore_file" ]; then
+    keystore_file="$PWD/$keystore_file"
+fi
+
+[ -n "$keystore_file" ] || { echo "release keystore not configured: set FORGERY_KEYSTORE_FILE or RELEASE_KEYSTORE_FILE in local.properties" >&2; exit 1; }
+[ -n "$keystore_pass" ] || { echo "release keystore password missing: FORGERY_KEYSTORE_PASSWORD or RELEASE_KEYSTORE_PASSWORD in local.properties" >&2; exit 1; }
+[ -f "$keystore_file" ] || { echo "keystore not found: $keystore_file" >&2; exit 1; }
+
+gradle :app:assembleRelease :app:bundleRelease \
+    "-PFORGERY_KEYSTORE_FILE=$keystore_file" \
+    "-PFORGERY_KEYSTORE_PASSWORD=$keystore_pass" \
+    "-PFORGERY_KEY_PASSWORD=$key_pass"
+
+echo
+echo "APK: app/build/outputs/apk/release/app-release.apk"
+echo "AAB: app/build/outputs/bundle/release/app-release.aab"
+echo "R8 mapping: app/build/outputs/mapping/release/mapping.txt"

@@ -58,6 +58,10 @@ interface HistoryDao {
     @Query("SELECT * FROM history WHERE id = :id")
     fun observeById(id: Long): Flow<List<HistoryEntity>>
 
+    /** Ordered ids (newest first) for the detail pager — avoids loading full rows. */
+    @Query("SELECT id FROM history ORDER BY createdAt DESC")
+    fun observeIds(): Flow<List<Long>>
+
     @Query("SELECT COUNT(*) FROM history")
     fun count(): Flow<Int>
 

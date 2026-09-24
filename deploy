@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+buildtype="${1:-debug}"
+case "$buildtype" in
+    debug|release) ;;
+    *) echo "usage: ./deploy [debug|release]" >&2; exit 1 ;;
+esac
+
+if [ "$buildtype" = "debug" ]; then
+    ./build_debug
+    apk="app/build/outputs/apk/debug/app-debug.apk"
+else
+    ./build_release
+    apk="app/build/outputs/apk/release/app-release.apk"
+fi
+
+command -v adb >/dev/null || { echo "adb not found in PATH" >&2; exit 1; }
+
+mapfile -t devices < <(adb devices -l | awk 'NR>1 && $2=="device" {print $1}')
+if [[ -n "${ANDROID_SERIAL:-}" ]] && printf '%s\n' "${devices[@]}" | grep -Fxq -- "$ANDROID_SERIAL"; then
+    SERIAL="$ANDROID_SERIAL"
+elif (( ${#devices[@]} == 0 )); then
+    echo "no device connected" >&2
+    exit 1
+elif (( ${#devices[@]} == 1 )); then
+    SERIAL="${devices[0]}"
+else
+    physical_devices=()
+    for device in "${devices[@]}"; do
+        [[ "$device" == emulator-* ]] || physical_devices+=("$device")
+    done
+    if (( ${#physical_devices[@]} == 1 )); then
+        SERIAL="${physical_devices[0]}"
+    else
+        printf 'multiple devices connected:\n' >&2
+        printf '  %s\n' "${devices[@]}" >&2
+        echo "set ANDROID_SERIAL to select a device" >&2
+        exit 1
+    fi
+fi
+
+adb -s "$SERIAL" install -r "$apk"
+echo "installed $buildtype on $(adb -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')"

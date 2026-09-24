@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+gradle :app:assembleDebug
+
+echo
+echo "APK: app/build/outputs/apk/debug/app-debug.apk"

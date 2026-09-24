@@ -1,6 +1,7 @@
 package com.forgery.app.core.common
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -140,5 +141,126 @@ class PngMetadataTest {
         assertNull(s.model)
         assertEquals(20, s.steps)
         assertEquals(5L, s.seed)
+    }
+
+    private fun physData(ppux: Int, ppuy: Int, unit: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).apply {
+            writeInt(ppux)
+            writeInt(ppuy)
+            writeByte(unit)
+        }
+        return out.toByteArray()
+    }
+
+    private fun jpegBytes(width: Int, height: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).apply {
+            writeByte(0xFF); writeByte(0xD8)
+            writeByte(0xFF); writeByte(0xE0)
+            writeShort(16)
+            writeBytes("JFIF"); writeByte(0)
+            writeByte(1); writeByte(1)
+            writeByte(0)
+            writeShort(1); writeShort(1)
+            writeByte(0); writeByte(0)
+            writeByte(0xFF); writeByte(0xC0)
+            writeShort(11)
+            writeByte(8)
+            writeShort(height)
+            writeShort(width)
+            writeByte(1)
+            writeByte(1); writeByte(0x11); writeByte(0)
+            writeByte(0xFF); writeByte(0xD9)
+        }
+        return out.toByteArray()
+    }
+
+    private fun webpBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("RIFF".toByteArray(Charsets.US_ASCII))
+        DataOutputStream(out).writeInt(12)
+        out.write("WEBP".toByteArray(Charsets.US_ASCII))
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `fileInfo empty returns null`() {
+        assertNull(fileInfo(ByteArray(0)))
+    }
+
+    @Test
+    fun `fileInfo png 1x1 with phys gives dims dpi and headers`() {
+        val bytes = pngBytes(chunk("pHYs", physData(11811, 11811, 1)))
+        val fi = fileInfo(bytes)
+        assertNotNull(fi)
+        assertEquals(FileFormat.PNG, fi!!.format)
+        assertEquals(bytes.size.toLong(), fi.sizeBytes)
+        assertEquals(1, fi.width)
+        assertEquals(1, fi.height)
+        assertEquals(300.0, fi.dpiX!!, 0.05)
+        assertEquals(300.0, fi.dpiY!!, 0.05)
+        assertEquals(8, fi.bitDepth)
+        assertEquals(2, fi.colorType)
+    }
+
+    @Test
+    fun `fileInfo png without phys gives null dpi`() {
+        val fi = fileInfo(pngBytes())
+        assertNotNull(fi)
+        assertEquals(FileFormat.PNG, fi!!.format)
+        assertEquals(1, fi.width)
+        assertEquals(1, fi.height)
+        assertNull(fi.dpiX)
+        assertNull(fi.dpiY)
+        assertEquals(8, fi.bitDepth)
+        assertEquals(2, fi.colorType)
+    }
+
+    @Test
+    fun `fileInfo png phys unit 0 gives null dpi`() {
+        val fi = fileInfo(pngBytes(chunk("pHYs", physData(11811, 11811, 0))))
+        assertNotNull(fi)
+        assertNull(fi!!.dpiX)
+        assertNull(fi.dpiY)
+    }
+
+    @Test
+    fun `fileInfo jpeg parses sof0 and has no dpi`() {
+        val bytes = jpegBytes(width = 640, height = 480)
+        val fi = fileInfo(bytes)
+        assertNotNull(fi)
+        assertEquals(FileFormat.JPEG, fi!!.format)
+        assertEquals(bytes.size.toLong(), fi.sizeBytes)
+        assertEquals(640, fi.width)
+        assertEquals(480, fi.height)
+        assertNull(fi.dpiX)
+        assertNull(fi.dpiY)
+        assertNull(fi.bitDepth)
+        assertNull(fi.colorType)
+    }
+
+    @Test
+    fun `fileInfo webp has null dims`() {
+        val fi = fileInfo(webpBytes())
+        assertNotNull(fi)
+        assertEquals(FileFormat.WEBP, fi!!.format)
+        assertNull(fi.width)
+        assertNull(fi.height)
+        assertNull(fi.dpiX)
+        assertNull(fi.dpiY)
+    }
+
+    @Test
+    fun `fileInfo garbage gives unknown and null dims`() {
+        val bytes = "hello".toByteArray()
+        val fi = fileInfo(bytes)
+        assertNotNull(fi)
+        assertEquals(FileFormat.UNKNOWN, fi!!.format)
+        assertEquals(bytes.size.toLong(), fi.sizeBytes)
+        assertNull(fi.width)
+        assertNull(fi.height)
+        assertNull(fi.dpiX)
+        assertNull(fi.dpiY)
     }
 }

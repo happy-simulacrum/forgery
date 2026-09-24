@@ -7,9 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Delete
@@ -19,7 +18,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -28,22 +26,24 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.designsystem.ForgeryTheme
 import com.forgery.app.core.model.HistoryItem
 import com.forgery.app.core.ui.LoadingState
-import java.io.File
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 @Composable
@@ -63,6 +63,7 @@ internal fun GalleryDetailRoute(
     GalleryDetailScreen(
         uiState = uiState,
         onAction = viewModel::onAction,
+        observeItem = viewModel::observeItem,
         onBackClick = onBackClick,
         onNavigateToAnalyze = onNavigateToAnalyze,
         onNavigateToInpaint = onNavigateToInpaint,
@@ -74,6 +75,7 @@ internal fun GalleryDetailRoute(
 internal fun GalleryDetailScreen(
     uiState: GalleryDetailUiState,
     onAction: (GalleryDetailAction) -> Unit,
+    observeItem: (Long) -> Flow<HistoryItem?>,
     onBackClick: () -> Unit,
     onNavigateToAnalyze: (String) -> Unit,
     onNavigateToInpaint: (String) -> Unit,
@@ -85,6 +87,7 @@ internal fun GalleryDetailScreen(
             is GalleryDetailUiState.Success -> GalleryDetailContent(
                 state = uiState,
                 onAction = onAction,
+                observeItem = observeItem,
                 onBackClick = onBackClick,
                 onNavigateToAnalyze = onNavigateToAnalyze,
                 onNavigateToInpaint = onNavigateToInpaint,
@@ -98,6 +101,7 @@ internal fun GalleryDetailScreen(
 private fun GalleryDetailContent(
     state: GalleryDetailUiState.Success,
     onAction: (GalleryDetailAction) -> Unit,
+    observeItem: (Long) -> Flow<HistoryItem?>,
     onBackClick: () -> Unit,
     onNavigateToAnalyze: (String) -> Unit,
     onNavigateToInpaint: (String) -> Unit,
@@ -107,6 +111,7 @@ private fun GalleryDetailContent(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val item = state.item
+    val ids = state.ids
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -117,23 +122,37 @@ private fun GalleryDetailContent(
                 TextButton(onClick = onBackClick) { Text("CLOSE") }
             }
 
-            if (item != null) {
-                AsyncImage(
-                    model = File(item.imagePath),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+            if (ids.isEmpty() || item == null) {
+                Text(
+                    "Image not found.",
+                    modifier = Modifier.padding(16.dp),
                 )
-                SelectionContainer {
-                    Text(
-                        item.paramsJson,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(0.4f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(8.dp),
-                    )
+            } else {
+                var zoomLocked by remember { mutableStateOf(false) }
+                // Fresh pager when the history size changes (delete): lands on
+                // state.page (the neighbor) with a reset zoom, no out-of-range scroll.
+                key(ids.size) {
+                    val pagerState = rememberPagerState(
+                        initialPage = state.page.coerceIn(0, ids.lastIndex),
+                    ) { ids.size }
+                    LaunchedEffect(pagerState.currentPage) {
+                        zoomLocked = false
+                        onAction(GalleryDetailAction.PageChanged(pagerState.currentPage))
+                    }
+                    HorizontalPager(
+                        state = pagerState,
+                        userScrollEnabled = !zoomLocked,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    ) { page ->
+                        DetailPage(
+                            id = ids.getOrNull(page),
+                            observeItem = observeItem,
+                            onZoomChanged = { zoomed ->
+                                if (page == pagerState.currentPage) zoomLocked = zoomed
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -163,11 +182,6 @@ private fun GalleryDetailContent(
                     onClick = { onNavigateToAnalyze(toFileUri(item.imagePath)) },
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                 ) { Text("ANALYZE") }
-            } else {
-                Text(
-                    "Image not found.",
-                    modifier = Modifier.padding(16.dp),
-                )
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
@@ -187,18 +201,48 @@ private fun GalleryDetailContent(
     }
 }
 
+@Composable
+private fun DetailPage(
+    id: Long?,
+    observeItem: (Long) -> Flow<HistoryItem?>,
+    onZoomChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (id == null) {
+        LoadingState(modifier.fillMaxSize())
+        return
+    }
+    val item by remember(id) { observeItem(id) }.collectAsStateWithLifecycle(initialValue = null)
+    val path = item?.imagePath
+    if (path == null) {
+        LoadingState(modifier.fillMaxSize())
+    } else {
+        key(id) {
+            ZoomableImage(
+                imagePath = path,
+                onZoomChanged = onZoomChanged,
+                modifier = modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
 private fun toFileUri(imagePath: String): String =
     if ("://" in imagePath) imagePath else "file://$imagePath"
 
 @Preview
 @Composable
 private fun GalleryDetailScreenPreview() {
+    val previewItem = HistoryItem(7, "/img7.png", null, "{\"prompt\":\"cat\"}", "today")
     ForgeryTheme {
         GalleryDetailScreen(
             uiState = GalleryDetailUiState.Success(
-                item = HistoryItem(7, "/img7.png", null, "{\"prompt\":\"cat\"}", "today"),
+                item = previewItem,
+                ids = listOf(9L, 7L, 5L),
+                page = 1,
             ),
             onAction = {},
+            observeItem = { flowOf(previewItem) },
             onBackClick = {},
             onNavigateToAnalyze = {},
             onNavigateToInpaint = {},

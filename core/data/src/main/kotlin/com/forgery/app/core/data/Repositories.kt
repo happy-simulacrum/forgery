@@ -15,6 +15,8 @@ import javax.inject.Singleton
 interface HistoryRepository {
     fun observePage(limit: Int, offset: Int): Flow<List<HistoryItem>>
     fun observeDetail(id: Long): Flow<HistoryItem?> = flowOf(null)
+    /** Ordered ids (newest first) backing the detail pager. */
+    fun observeIds(): Flow<List<Long>> = flowOf(emptyList())
     fun count(): Flow<Int>
     suspend fun add(imagePath: String, thumbPath: String?, paramsJson: String, date: String): Long
     suspend fun delete(ids: List<Long>)
@@ -31,6 +33,7 @@ class OfflineFirstHistoryRepository @Inject constructor(
         }
     override fun observeDetail(id: Long): Flow<HistoryItem?> =
         dao.observeById(id).map { it.firstOrNull()?.toItem() }
+    override fun observeIds(): Flow<List<Long>> = dao.observeIds()
     override fun count() = dao.count()
     override suspend fun add(imagePath: String, thumbPath: String?, paramsJson: String, date: String) =
         dao.upsert(HistoryEntity(imagePath = imagePath, thumbPath = thumbPath, paramsJson = paramsJson, date = date))

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
 import com.forgery.app.core.common.A1111Settings
+import com.forgery.app.core.common.FileInfo
+import com.forgery.app.core.common.fileInfo
 import com.forgery.app.core.common.parseA1111Parameters
 import com.forgery.app.core.common.parseA1111Settings
 import com.forgery.app.core.common.readPngMetadata
@@ -51,6 +53,7 @@ class AnalyzeViewModel @Inject constructor(
         val raw: String?,
         val entries: Int,
         val settings: A1111Settings?,
+        val fileInfo: FileInfo?,
     )
 
     val uiState: StateFlow<AnalyzeUiState> = combine(uri, parsed, statusMessage) { u, p, msg ->
@@ -63,6 +66,7 @@ class AnalyzeViewModel @Inject constructor(
             noMetadata = u != null && p != null && p.raw == null,
             statusMessage = msg,
             settingsSummary = p?.settings?.let(::buildSettingsSummary),
+            fileInfo = p?.fileInfo,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -97,14 +101,18 @@ class AnalyzeViewModel @Inject constructor(
                 statusMessage.value = "Could not read image."
                 return@launch
             }
-            val meta = withContext(Dispatchers.Default) { readPngMetadata(bytes) }
-            val raw = meta?.parameters
+            val meta = withContext(Dispatchers.Default) {
+                readPngMetadata(bytes) to fileInfo(bytes)
+            }
+            val info = meta.second
+            val raw = meta.first?.parameters
             if (raw.isNullOrBlank()) {
-                parsed.value = Parsed("", "", null, meta?.entries?.size ?: 0, null)
+                parsed.value = Parsed("", "", null, meta.first?.entries?.size ?: 0, null, info)
                 statusMessage.value = "No generation metadata found."
             } else {
                 val (prompt, neg) = parseA1111Parameters(raw)
-                parsed.value = Parsed(prompt, neg, raw, meta.entries.size, parseA1111Settings(raw))
+                val entries = meta.first!!.entries.size
+                parsed.value = Parsed(prompt, neg, raw, entries, parseA1111Settings(raw), info)
             }
         }
     }

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+# No product flavors and no androidTest/connected suites: unit tests across
+# all modules (no emulator needed). Extra args are forwarded to gradle,
+# e.g. ./run_tests :core:data:testDebugUnitTest
+gradle testDebugUnitTest "$@"
+
+echo
+echo "reports: <module>/build/reports/tests/testDebugUnitTest/index.html"

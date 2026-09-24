@@ -15,7 +15,8 @@
         android:name=".ForgeryApp"
         android:label="Forgery"
         android:theme="@android:style/Theme.Material.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true">
