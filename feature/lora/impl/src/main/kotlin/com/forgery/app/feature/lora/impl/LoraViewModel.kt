@@ -3,15 +3,12 @@ package com.forgery.app.feature.lora.impl
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.navigation.toRoute
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.LoraRepository
 import com.forgery.app.core.data.PromptDraftRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.LoraItem
 import com.forgery.app.core.model.LoraMeta
-import com.forgery.app.feature.lora.api.LoraRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,10 +26,6 @@ class LoraViewModel @Inject constructor(
     private val loraRepository: LoraRepository,
     private val promptDrafts: PromptDraftRepository,
 ) : ViewModel() {
-
-    private val mode: GenerationMode = runCatching {
-        savedStateHandle.toRoute<LoraRoute>().mode?.let { GenerationMode.valueOf(it) }
-    }.getOrNull() ?: GenerationMode.SDXL
 
     private val query = MutableStateFlow("")
     private val items = MutableStateFlow<List<LoraItem>>(emptyList())
@@ -69,7 +62,6 @@ class LoraViewModel @Inject constructor(
         secondary
     ) { q, list, loading, error, s ->
         LoraUiState.Success(
-            mode = mode,
             query = q,
             items = list,
             listLoading = loading,
@@ -143,7 +135,7 @@ class LoraViewModel @Inject constructor(
             val tag = "<lora:$key:$weight>"
             val trigger = d.meta.trigger.trim()
             val positive = if (trigger.isBlank()) tag else "$tag $trigger"
-            promptDrafts.appendPrompt(mode, positive, "")
+            promptDrafts.appendPrompt(positive, "")
             detail.value = null
             notice.value = "Inserted $tag"
         }

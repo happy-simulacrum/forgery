@@ -17,7 +17,6 @@ import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.data.buildTxt2ImgPayload
 import com.forgery.app.core.data.payloadToJsonString
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.feature.inpaint.api.InpaintRoute
@@ -78,7 +77,7 @@ class InpaintViewModel @Inject constructor(
             statusMessage = status,
             queueRunning = queueRunning,
         )
-    }.combine(modulesSelection.observeModules(GenerationMode.SDXL)) { state, modules ->
+    }.combine(modulesSelection.observeModules()) { state, modules ->
         when (state) {
             InpaintUiState.Loading -> state
             is InpaintUiState.Success -> state.copy(modules = modules)
@@ -257,7 +256,6 @@ class InpaintViewModel @Inject constructor(
                     renderMaskBase64(source, e.strokes)
                 }
                 val params = GenerationParams(
-                    mode = GenerationMode.SDXL,
                     prompt = e.prompt,
                     negativePrompt = e.negativePrompt,
                     steps = e.steps,
@@ -267,7 +265,7 @@ class InpaintViewModel @Inject constructor(
                     modelTitle = e.modelTitle,
                     sampler = e.sampler,
                     scheduler = e.scheduler,
-                    additionalModules = modulesSelection.observeModules(GenerationMode.SDXL).first(),
+                    additionalModules = modulesSelection.observeModules().first(),
                 )
                 // C-1 file-back: params-only payload (~1KB); source/mask PNG
                 // bytes live in filesDir/queue_inputs/<jobId>/, worker expands

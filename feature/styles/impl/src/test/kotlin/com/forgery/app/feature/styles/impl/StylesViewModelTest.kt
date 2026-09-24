@@ -4,7 +4,6 @@ import androidx.lifecycle.SavedStateHandle
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.StyleRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.StylePreset
 import com.forgery.app.core.testing.TestDispatcherRule
@@ -42,21 +41,14 @@ private class FakeStyleRepository(
 }
 
 private class FakePromptDraftRepository : PromptDraftRepository {
-    val appended = mutableListOf<Triple<GenerationMode, String, String>>()
-    private val active = MutableStateFlow(GenerationMode.SDXL)
-    private val drafts = mutableMapOf<GenerationMode, MutableStateFlow<PromptDraft>>()
-    private fun flowOf(mode: GenerationMode) =
-        drafts.getOrPut(mode) { MutableStateFlow(PromptDraft()) }
-    override fun observeDraft(mode: GenerationMode): Flow<PromptDraft> = flowOf(mode).asStateFlow()
-    override fun observeActiveMode(): Flow<GenerationMode> = active.asStateFlow()
-    override suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String) {
-        flowOf(mode).value = PromptDraft(prompt, negativePrompt)
+    val appended = mutableListOf<Pair<String, String>>()
+    private val draft = MutableStateFlow(PromptDraft())
+    override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
+    override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        draft.value = PromptDraft(prompt, negativePrompt)
     }
-    override suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String) {
-        appended += Triple(mode, text, negativeText)
-    }
-    override suspend fun setActiveMode(mode: GenerationMode) {
-        active.value = mode
+    override suspend fun appendPrompt(text: String, negativeText: String) {
+        appended += text to negativeText
     }
 }
 
@@ -73,7 +65,7 @@ class StylesViewModelTest {
         first { it is StylesUiState.Success } as StylesUiState.Success
 
     @Test
-    fun `apply appends prompt and neg to mode draft`() = runTest {
+    fun `apply appends prompt and neg to draft`() = runTest {
         val vm = viewModel()
         vm.uiState.success()
         val preset = StylePreset("photo", "photorealistic", "cartoon")
@@ -82,8 +74,7 @@ class StylesViewModelTest {
             it is StylesUiState.Success && it.notice != null
         }
         assertEquals(1, drafts.appended.size)
-        val (mode, text, neg) = drafts.appended.first()
-        assertEquals(GenerationMode.SDXL, mode)
+        val (text, neg) = drafts.appended.first()
         assertEquals("photorealistic", text)
         assertEquals("cartoon", neg)
     }

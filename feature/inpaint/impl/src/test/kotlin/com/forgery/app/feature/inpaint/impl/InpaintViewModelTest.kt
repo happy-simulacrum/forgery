@@ -7,7 +7,6 @@ import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.QueueSnapshot
@@ -84,16 +83,12 @@ private class FakeQueueInputs : QueueInputs {
 }
 
 private class FakeModulesSelectionRepository : ModulesSelectionRepository {
-    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
+    private val stored = MutableStateFlow(emptyList<String>())
 
-    private fun flowOf(mode: GenerationMode) =
-        stored.getOrPut(mode) { MutableStateFlow(emptyList()) }
+    override fun observeModules(): Flow<List<String>> = stored.asStateFlow()
 
-    override fun observeModules(mode: GenerationMode): Flow<List<String>> =
-        flowOf(mode).asStateFlow()
-
-    override suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
-        flowOf(mode).value = modules
+    override suspend fun saveModules(modules: List<String>) {
+        stored.value = modules
     }
 }
 
@@ -250,7 +245,7 @@ class InpaintViewModelTest {
     @Test
     fun `enqueue carries shared module selection`() = runTest {
         val selection = FakeModulesSelectionRepository()
-        selection.saveModules(GenerationMode.SDXL, listOf("ae.safetensors"))
+        selection.saveModules(listOf("ae.safetensors"))
         val vm = viewModel(selection = selection)
         vm.uiState.first {
             it is InpaintUiState.Success && it.modules == listOf("ae.safetensors")

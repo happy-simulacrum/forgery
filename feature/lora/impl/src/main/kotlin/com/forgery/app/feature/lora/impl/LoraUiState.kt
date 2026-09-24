@@ -1,6 +1,5 @@
 package com.forgery.app.feature.lora.impl
 
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.LoraItem
 import com.forgery.app.core.model.LoraMeta
 
@@ -14,7 +13,6 @@ sealed interface LoraUiState {
     data object Loading : LoraUiState
 
     data class Success(
-        val mode: GenerationMode = GenerationMode.SDXL,
         val query: String = "",
         val items: List<LoraItem> = emptyList(),
         val listLoading: Boolean = false,

@@ -5,7 +5,6 @@ import com.forgery.app.core.common.FileFormat
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.PromptDraftRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.RestoredParams
@@ -82,7 +81,7 @@ private fun pngWithoutText(): ByteArray {
 
 private val FULL_RAW = "a cat, detailed\nNegative prompt: blurry, lowres\n" +
     "Steps: 20, Sampler: Euler a, Schedule type: Automatic, CFG scale: 7.0, " +
-    "Seed: 123, Size: 512x768, Model: v1-5-pruned, " +
+    "Seed: 123, Size: 512x768, Model: v1-5-pruned, VAE: vae-ft-mse-840000-ema-pruned, " +
     "Hires upscale: 2.0, Hires steps: 10, Hires upscaler: Latent, Denoising strength: 0.7"
 
 private class FakeImageSource(val bytes: ByteArray?) : AnalyzeImageSource {
@@ -90,30 +89,21 @@ private class FakeImageSource(val bytes: ByteArray?) : AnalyzeImageSource {
 }
 
 private class FakePromptDraftRepository : PromptDraftRepository {
-    val set = mutableListOf<Triple<GenerationMode, String, String>>()
-    val activeModes = mutableListOf<GenerationMode>()
-    private val active = MutableStateFlow(GenerationMode.SDXL)
-    private val drafts = mutableMapOf<GenerationMode, MutableStateFlow<PromptDraft>>()
-    private fun flowOf(mode: GenerationMode) =
-        drafts.getOrPut(mode) { MutableStateFlow(PromptDraft()) }
-    override fun observeDraft(mode: GenerationMode): Flow<PromptDraft> = flowOf(mode).asStateFlow()
-    override fun observeActiveMode(): Flow<GenerationMode> = active.asStateFlow()
-    override suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String) {
-        set += Triple(mode, prompt, negativePrompt)
-        flowOf(mode).value = PromptDraft(prompt, negativePrompt)
+    val set = mutableListOf<Pair<String, String>>()
+    private val draft = MutableStateFlow(PromptDraft())
+    override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
+    override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        set += prompt to negativePrompt
+        draft.value = PromptDraft(prompt, negativePrompt)
     }
-    override suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String) = Unit
-    override suspend fun setActiveMode(mode: GenerationMode) {
-        activeModes += mode
-        active.value = mode
-    }
+    override suspend fun appendPrompt(text: String, negativeText: String) = Unit
 }
 
 private class FakeHrSettingsRepository : HrSettingsRepository {
-    val saved = mutableListOf<Pair<GenerationMode, HrSettings>>()
-    override fun observeHr(mode: GenerationMode): Flow<HrSettings> = flowOf(HrSettings())
-    override suspend fun saveHr(mode: GenerationMode, hr: HrSettings) {
-        saved += mode to hr
+    val saved = mutableListOf<HrSettings>()
+    override fun observeHr(): Flow<HrSettings> = flowOf(HrSettings())
+    override suspend fun saveHr(hr: HrSettings) {
+        saved += hr
     }
 }
 
@@ -198,35 +188,34 @@ class AnalyzeViewModelTest {
     }
 
     @Test
-    fun `copy to mode sets prompt and activates mode`() = runTest {
+    fun `use again sets prompt`() = runTest {
         val vm = viewModel(pngWithText("a dog\nNegative prompt: ugly\nSteps: 5"))
         vm.uiState.success()
         vm.onAction(AnalyzeAction.PickResult("content://x"))
         vm.uiState.first { it is AnalyzeUiState.Success && it.prompt.isNotBlank() }
-        vm.onAction(AnalyzeAction.CopyToMode(GenerationMode.FLUX))
+        vm.onAction(AnalyzeAction.UseAgain)
         vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
         assertEquals(
-            listOf(Triple(GenerationMode.FLUX, "a dog", "ugly")),
+            listOf("a dog" to "ugly"),
             drafts.set,
         )
-        assertEquals(listOf(GenerationMode.FLUX), drafts.activeModes)
     }
 
     @Test
-    fun `copy to mode saves hr and hands off restored params`() = runTest {
+    fun `use again saves hr and hands off restored params`() = runTest {
         val vm = viewModel(pngWithText(FULL_RAW))
         vm.pickAndWait { it.prompt.isNotBlank() }
-        vm.onAction(AnalyzeAction.CopyToMode(GenerationMode.SDXL))
+        vm.onAction(AnalyzeAction.UseAgain)
         vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
         assertEquals(
             listOf(
-                GenerationMode.SDXL to HrSettings(
+                HrSettings(
                     enable = true,
                     upscaler = "Latent",
                     scale = 2.0,
                     steps = 10,
                     denoise = 0.7,
-                    cfg = 1.0,
+                    cfg = 7.0,
                 ),
             ),
             hr.saved,
@@ -241,6 +230,7 @@ class AnalyzeViewModelTest {
                 width = 512,
                 height = 768,
                 modelTitle = "v1-5-pruned",
+                additionalModules = listOf("vae-ft-mse-840000-ema-pruned"),
                 hr = null,
             ),
             handoff.consume(),
@@ -250,13 +240,23 @@ class AnalyzeViewModelTest {
     }
 
     @Test
-    fun `copy without settings hands off nulls and leaves hr untouched`() = runTest {
+    fun `use again with automatic vae hands off null modules`() = runTest {
+        val raw = "a cat\nNegative prompt: blurry\nSteps: 10, VAE: Automatic"
+        val vm = viewModel(pngWithText(raw))
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        vm.onAction(AnalyzeAction.UseAgain)
+        vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
+        assertNull(handoff.consume()?.additionalModules)
+    }
+
+    @Test
+    fun `use again without settings hands off nulls and leaves hr untouched`() = runTest {
         val vm = viewModel(pngWithText("a dog\nNegative prompt: ugly"))
         vm.pickAndWait { it.prompt.isNotBlank() }
-        vm.onAction(AnalyzeAction.CopyToMode(GenerationMode.FLUX))
+        vm.onAction(AnalyzeAction.UseAgain)
         vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
         assertEquals(
-            listOf(Triple(GenerationMode.FLUX, "a dog", "ugly")),
+            listOf("a dog" to "ugly"),
             drafts.set,
         )
         assertTrue(hr.saved.isEmpty())

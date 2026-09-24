@@ -5,7 +5,6 @@ import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.LoraRepository
 import com.forgery.app.core.data.PromptDraftRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.LoraItem
 import com.forgery.app.core.model.LoraMeta
 import com.forgery.app.core.model.PromptDraft
@@ -59,26 +58,19 @@ private class FakeLoraRepository : LoraRepository {
 }
 
 private class FakePromptDraftRepository : PromptDraftRepository {
-    val appended = mutableListOf<Triple<GenerationMode, String, String>>()
-    private val active = MutableStateFlow(GenerationMode.SDXL)
-    private val drafts = mutableMapOf<GenerationMode, MutableStateFlow<PromptDraft>>()
-    private fun flowOf(mode: GenerationMode) =
-        drafts.getOrPut(mode) { MutableStateFlow(PromptDraft()) }
-    override fun observeDraft(mode: GenerationMode): Flow<PromptDraft> = flowOf(mode).asStateFlow()
-    override fun observeActiveMode(): Flow<GenerationMode> = active.asStateFlow()
-    override suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String) {
-        flowOf(mode).value = PromptDraft(prompt, negativePrompt)
+    val appended = mutableListOf<Pair<String, String>>()
+    private val draft = MutableStateFlow(PromptDraft())
+    override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
+    override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        draft.value = PromptDraft(prompt, negativePrompt)
     }
-    override suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String) {
-        appended += Triple(mode, text, negativeText)
-        val cur = flowOf(mode).value
-        flowOf(mode).value = PromptDraft(
+    override suspend fun appendPrompt(text: String, negativeText: String) {
+        appended += text to negativeText
+        val cur = draft.value
+        draft.value = PromptDraft(
             (cur.prompt + " " + text).trim(),
             (cur.negativePrompt + " " + negativeText).trim(),
         )
-    }
-    override suspend fun setActiveMode(mode: GenerationMode) {
-        active.value = mode
     }
 }
 
@@ -108,7 +100,6 @@ class LoraViewModelTest {
         } as LoraUiState.Success
         assertEquals(2, loaded.items.size)
         assertEquals(setOf("detail.safetensors"), loaded.favorites)
-        assertEquals(GenerationMode.SDXL, loaded.mode)
     }
 
     @Test
@@ -123,7 +114,7 @@ class LoraViewModelTest {
     }
 
     @Test
-    fun `insert appends tag and trigger to mode draft`() = runTest {
+    fun `insert appends tag and trigger to draft`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is LoraUiState.Success && it.items.isNotEmpty() }
         val item = LoraItem("detail.safetensors", "detail.safetensors", "detail")
@@ -134,8 +125,7 @@ class LoraViewModelTest {
             it is LoraUiState.Success && it.detail == null && it.notice != null
         }
         assertEquals(1, drafts.appended.size)
-        val (mode, tag, trigger) = drafts.appended.first()
-        assertEquals(GenerationMode.SDXL, mode)
+        val (tag, trigger) = drafts.appended.first()
         assertEquals("<lora:detail:0.8> masterpiece", tag)
         assertEquals("", trigger)
     }

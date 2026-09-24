@@ -70,7 +70,7 @@ private fun StylesContent(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(16.dp)) {
-        Text("Styles → ${state.mode.name} prompt")
+        Text("Styles → prompt")
         OutlinedTextField(
             value = state.query,
             onValueChange = { onAction(StylesAction.QueryChanged(it)) },

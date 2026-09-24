@@ -1,13 +1,11 @@
 package com.forgery.app.feature.styles.impl
 
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.StylePreset
 
 sealed interface StylesUiState {
     data object Loading : StylesUiState
 
     data class Success(
-        val mode: GenerationMode = GenerationMode.SDXL,
         val query: String = "",
         val styles: List<StylePreset> = emptyList(),
         val importing: Boolean = false,

@@ -74,9 +74,7 @@ dependencies {
     implementation(projects.feature.lora.impl)
     implementation(projects.feature.modules.impl)
     implementation(projects.feature.styles.impl)
-    implementation(projects.feature.magicprompt.impl)
     implementation(projects.feature.settings.impl)
-    implementation(projects.feature.power.impl)
     implementation(projects.feature.comfy.impl)
     implementation(projects.feature.analyze.impl)
 

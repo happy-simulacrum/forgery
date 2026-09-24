@@ -3,13 +3,10 @@ package com.forgery.app.feature.styles.impl
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.navigation.toRoute
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.StyleRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.StylePreset
-import com.forgery.app.feature.styles.api.StylesRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -26,10 +23,6 @@ class StylesViewModel @Inject constructor(
     private val promptDrafts: PromptDraftRepository,
 ) : ViewModel() {
 
-    private val mode: GenerationMode = runCatching {
-        savedStateHandle.toRoute<StylesRoute>().mode?.let { GenerationMode.valueOf(it) }
-    }.getOrNull() ?: GenerationMode.SDXL
-
     private val query = MutableStateFlow("")
     private val importing = MutableStateFlow(false)
     private val notice = MutableStateFlow<String?>(null)
@@ -43,7 +36,6 @@ class StylesViewModel @Inject constructor(
         editor
     ) { q, styles, imp, note, ed ->
         StylesUiState.Success(
-            mode = mode,
             query = q,
             styles = styles,
             importing = imp,
@@ -74,7 +66,7 @@ class StylesViewModel @Inject constructor(
 
     private fun apply(preset: StylePreset) {
         viewModelScope.launch {
-            promptDrafts.appendPrompt(mode, preset.prompt, preset.negativePrompt)
+            promptDrafts.appendPrompt(preset.prompt, preset.negativePrompt)
             notice.value = "Applied ${preset.name}"
         }
     }

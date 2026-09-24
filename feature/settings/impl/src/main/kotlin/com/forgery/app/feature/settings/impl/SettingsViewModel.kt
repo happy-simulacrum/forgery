@@ -74,29 +74,9 @@ class SettingsViewModel @Inject constructor(
                 draft.value = d.copy(texts = d.texts.copy(portWebUi = action.value))
                 check.value = CheckState.Idle
             }
-            is SettingsAction.PortComfyChanged -> {
-                val d = buffered()
-                draft.value = d.copy(texts = d.texts.copy(portComfy = action.value))
-                check.value = CheckState.Idle
-            }
-            is SettingsAction.PortLlmChanged -> {
-                val d = buffered()
-                draft.value = d.copy(texts = d.texts.copy(portLlm = action.value))
-                check.value = CheckState.Idle
-            }
-            is SettingsAction.PortWakeChanged -> {
-                val d = buffered()
-                draft.value = d.copy(texts = d.texts.copy(portWake = action.value))
-                check.value = CheckState.Idle
-            }
             is SettingsAction.ExtForgeUrlChanged -> {
                 val d = buffered()
                 draft.value = d.copy(texts = d.texts.copy(extForgeUrl = action.value))
-                check.value = CheckState.Idle
-            }
-            is SettingsAction.ExtWakeUrlChanged -> {
-                val d = buffered()
-                draft.value = d.copy(texts = d.texts.copy(extWakeUrl = action.value))
                 check.value = CheckState.Idle
             }
             is SettingsAction.CfClientIdChanged -> {
@@ -138,11 +118,7 @@ class SettingsViewModel @Inject constructor(
             config = c.copy(
                 baseIp = t.baseIp.text,
                 portWebUi = parsePort(t.portWebUi.text) ?: c.portWebUi,
-                portComfy = parsePort(t.portComfy.text) ?: c.portComfy,
-                portLlm = parsePort(t.portLlm.text) ?: c.portLlm,
-                portWake = parsePort(t.portWake.text) ?: c.portWake,
                 extForgeUrl = t.extForgeUrl.text,
-                extWakeUrl = t.extWakeUrl.text,
                 cfClientId = t.cfClientId.text,
                 cfClientSecret = t.cfClientSecret.text,
             ),
@@ -193,15 +169,7 @@ sealed interface SettingsAction {
     /** Raw keystroke; domain commit happens on focus loss / save. */
     data class PortWebUiChanged(val value: TextFieldValue) : SettingsAction
     /** Raw keystroke; domain commit happens on focus loss / save. */
-    data class PortComfyChanged(val value: TextFieldValue) : SettingsAction
-    /** Raw keystroke; domain commit happens on focus loss / save. */
-    data class PortLlmChanged(val value: TextFieldValue) : SettingsAction
-    /** Raw keystroke; domain commit happens on focus loss / save. */
-    data class PortWakeChanged(val value: TextFieldValue) : SettingsAction
-    /** Raw keystroke; domain commit happens on focus loss / save. */
     data class ExtForgeUrlChanged(val value: TextFieldValue) : SettingsAction
-    /** Raw keystroke; domain commit happens on focus loss / save. */
-    data class ExtWakeUrlChanged(val value: TextFieldValue) : SettingsAction
     /** Raw keystroke; domain commit happens on focus loss / save. */
     data class CfClientIdChanged(val value: TextFieldValue) : SettingsAction
     /** Raw keystroke; domain commit happens on focus loss / save. */

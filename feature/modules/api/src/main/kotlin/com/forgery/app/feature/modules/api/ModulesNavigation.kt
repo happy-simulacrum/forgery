@@ -4,10 +4,10 @@ import androidx.navigation.NavController
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class ModulesRoute(val mode: String? = null)
+data object ModulesRoute
 
 const val MODULES_ROUTE = "modules"
 
-fun NavController.navigateToModules(mode: String? = null) {
-    navigate(ModulesRoute(mode))
+fun NavController.navigateToModules() {
+    navigate(ModulesRoute)
 }

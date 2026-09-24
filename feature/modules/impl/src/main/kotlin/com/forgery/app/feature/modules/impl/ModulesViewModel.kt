@@ -4,12 +4,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.navigation.toRoute
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
-import com.forgery.app.core.model.GenerationMode
-import com.forgery.app.feature.modules.api.ModulesRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,7 +19,7 @@ import javax.inject.Inject
 
 /**
  * Forge Neo "VAE / Text Encoder" browser. Selection applies immediately to the
- * shared [ModulesSelectionRepository] (per mode, persisted) — DONE just goes back.
+ * shared [ModulesSelectionRepository] (persisted) — DONE just goes back.
  */
 @HiltViewModel
 class ModulesViewModel @Inject constructor(
@@ -30,10 +27,6 @@ class ModulesViewModel @Inject constructor(
     private val generationRepository: GenerationRepository,
     private val modulesSelection: ModulesSelectionRepository,
 ) : ViewModel() {
-
-    private val mode: GenerationMode = runCatching {
-        savedStateHandle.toRoute<ModulesRoute>().mode?.let { GenerationMode.valueOf(it) }
-    }.getOrNull() ?: GenerationMode.SDXL
 
     private val query = MutableStateFlow(TextFieldValue(""))
     private val catalog = MutableStateFlow<List<String>>(emptyList())
@@ -45,12 +38,11 @@ class ModulesViewModel @Inject constructor(
         catalog,
         listLoading,
         listError,
-        modulesSelection.observeModules(mode),
+        modulesSelection.observeModules(),
     ) { q, cat, loading, error, selected ->
         val raw = q.text
         val items = if (raw.isBlank()) cat else cat.filter { it.contains(raw, ignoreCase = true) }
         ModulesUiState.Success(
-            mode = mode,
             query = q,
             items = items,
             totalCount = cat.size,
@@ -74,7 +66,7 @@ class ModulesViewModel @Inject constructor(
             ModulesAction.Refresh -> refresh()
             is ModulesAction.Toggle -> toggle(action.name)
             ModulesAction.Clear -> viewModelScope.launch {
-                modulesSelection.saveModules(mode, emptyList())
+                modulesSelection.saveModules(emptyList())
             }
         }
     }
@@ -88,9 +80,9 @@ class ModulesViewModel @Inject constructor(
                     catalog.value = r.data
                     // Drop persisted selections the server no longer offers.
                     val known = r.data.toSet()
-                    val current = modulesSelection.observeModules(mode).first()
+                    val current = modulesSelection.observeModules().first()
                     val pruned = current.filter { it in known }
-                    if (pruned.size != current.size) modulesSelection.saveModules(mode, pruned)
+                    if (pruned.size != current.size) modulesSelection.saveModules(pruned)
                 }
                 is Result.Error -> listError.value = r.message
                 is Result.Loading -> Unit
@@ -101,9 +93,9 @@ class ModulesViewModel @Inject constructor(
 
     private fun toggle(name: String) {
         viewModelScope.launch {
-            val current = modulesSelection.observeModules(mode).first()
+            val current = modulesSelection.observeModules().first()
             val next = if (name in current) current - name else (current + name).sorted()
-            modulesSelection.saveModules(mode, next)
+            modulesSelection.saveModules(next)
         }
     }
 }

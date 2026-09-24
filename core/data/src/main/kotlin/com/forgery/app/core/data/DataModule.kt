@@ -15,8 +15,6 @@ abstract class DataModule {
     @Binds abstract fun bindDrafts(impl: DefaultPromptDraftRepository): PromptDraftRepository
     @Binds abstract fun bindLora(impl: DefaultLoraRepository): LoraRepository
     @Binds abstract fun bindStyles(impl: DefaultStyleRepository): StyleRepository
-    @Binds abstract fun bindMagic(impl: DefaultMagicPromptRepository): MagicPromptRepository
-    @Binds abstract fun bindPower(impl: DefaultPowerRepository): PowerRepository
     @Binds abstract fun bindHr(impl: DefaultHrSettingsRepository): HrSettingsRepository
     @Binds abstract fun bindDefaults(impl: DefaultDefaultsRepository): DefaultsRepository
     @Binds abstract fun bindModules(impl: DefaultModulesSelectionRepository): ModulesSelectionRepository

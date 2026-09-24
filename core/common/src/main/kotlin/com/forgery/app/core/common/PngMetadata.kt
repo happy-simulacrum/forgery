@@ -367,6 +367,8 @@ data class A1111Settings(
     val width: Int? = null,
     val height: Int? = null,
     val model: String? = null,
+    /** Raw VAE tag from metadata (`VAE: ...`); null when absent. */
+    val vae: String? = null,
     val hrEnable: Boolean = false,
     val hrUpscaler: String? = null,
     val hrScale: Double? = null,
@@ -392,6 +394,7 @@ fun parseA1111Settings(raw: String): A1111Settings {
         val width = sizeMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
         val height = sizeMatch?.groupValues?.getOrNull(2)?.toIntOrNull()
         val model = group("""(?:^|,)\s*Model:\s*([^,]+)""", setOf(RegexOption.MULTILINE))
+        val vae = group("""(?:^|,)\s*VAE:\s*([^,]+)""", setOf(RegexOption.MULTILINE))
 
         val hrScaleRaw = group("""Hires upscale:\s*([\d.]+)""")
         val hrStepsRaw = group("""Hires steps:\s*(\d+)""")
@@ -408,6 +411,7 @@ fun parseA1111Settings(raw: String): A1111Settings {
             width = width,
             height = height,
             model = model,
+            vae = vae,
             hrEnable = hrEnable,
             hrUpscaler = hrUpscaler,
             hrScale = hrScaleRaw?.toDoubleOrNull(),

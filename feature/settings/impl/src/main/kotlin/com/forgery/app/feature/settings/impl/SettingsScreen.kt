@@ -134,35 +134,11 @@ private fun SettingsContent(
                         onValueChange = { onAction(SettingsAction.PortWebUiChanged(it)) },
                         onCommit = { onAction(SettingsAction.CommitInputs) },
                     )
-                    PortRow(
-                        label = "ComfyUI port",
-                        value = state.texts.portComfy,
-                        onValueChange = { onAction(SettingsAction.PortComfyChanged(it)) },
-                        onCommit = { onAction(SettingsAction.CommitInputs) },
-                    )
-                    PortRow(
-                        label = "LLM port",
-                        value = state.texts.portLlm,
-                        onValueChange = { onAction(SettingsAction.PortLlmChanged(it)) },
-                        onCommit = { onAction(SettingsAction.CommitInputs) },
-                    )
-                    PortRow(
-                        label = "Wake port",
-                        value = state.texts.portWake,
-                        onValueChange = { onAction(SettingsAction.PortWakeChanged(it)) },
-                        onCommit = { onAction(SettingsAction.CommitInputs) },
-                    )
                 } else {
                     TextRow(
                         label = "Forge URL",
                         value = state.texts.extForgeUrl,
                         onValueChange = { onAction(SettingsAction.ExtForgeUrlChanged(it)) },
-                        onCommit = { onAction(SettingsAction.CommitInputs) },
-                    )
-                    TextRow(
-                        label = "Wake URL",
-                        value = state.texts.extWakeUrl,
-                        onValueChange = { onAction(SettingsAction.ExtWakeUrlChanged(it)) },
                         onCommit = { onAction(SettingsAction.CommitInputs) },
                     )
                     SwitchRow(
@@ -186,23 +162,6 @@ private fun SettingsContent(
                             onCommit = { onAction(SettingsAction.CommitInputs) },
                         )
                     }
-                }
-            }
-        }
-
-        item(key = "settings_tabs") {
-            SectionCard("INTERFACE TABS") {
-                SwitchRow("SDXL tab", prefs.showXl) {
-                    onAction(SettingsAction.UiPrefsChanged(prefs.copy(showXl = it)))
-                }
-                SwitchRow("Flux tab", prefs.showFlux) {
-                    onAction(SettingsAction.UiPrefsChanged(prefs.copy(showFlux = it)))
-                }
-                SwitchRow("Qwen tab", prefs.showQwen) {
-                    onAction(SettingsAction.UiPrefsChanged(prefs.copy(showQwen = it)))
-                }
-                SwitchRow("ComfyUI tab", prefs.showComfy) {
-                    onAction(SettingsAction.UiPrefsChanged(prefs.copy(showComfy = it)))
                 }
             }
         }

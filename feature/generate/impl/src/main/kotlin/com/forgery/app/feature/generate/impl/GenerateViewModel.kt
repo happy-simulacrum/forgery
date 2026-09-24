@@ -15,24 +15,22 @@ import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.data.buildTxt2ImgPayload
 import com.forgery.app.core.data.payloadToJsonString
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenerationParams
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueSnapshot
+import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.core.ui.adoptExternal
 import com.forgery.app.core.ui.parseSeedInput
 import com.forgery.app.core.ui.parseSizeInput
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -78,8 +76,8 @@ class GenerateViewModel @Inject constructor(
     private val handoff: AnalyzeHandoffRepository,
 ) : ViewModel() {
 
-    /** Non-text, non-HR, non-modules params; prompt text + mode + HR + modules live in repositories. */
-    private val rest = MutableStateFlow(defaultParamsFor(GenerationMode.SDXL))
+    /** Non-text, non-HR, non-modules params; prompt text + HR + modules live in repositories. */
+    private val rest = MutableStateFlow(defaultParams())
 
     /** Raw in-memory text state (VM is source of truth for what the user sees). */
     private val inputs = MutableStateFlow(GenerateInputs())
@@ -90,25 +88,20 @@ class GenerateViewModel @Inject constructor(
 
     /** Last HR value seen/saved (echo suppression for HR repo emissions). */
     private var lastHrSaved: HrSettings? = null
-    private var lastMode: GenerationMode? = null
 
-    private data class ModeData(
-        val mode: GenerationMode,
+    private data class DraftData(
         val prompt: String,
         val negativePrompt: String,
         val hr: HrSettings,
         val modules: List<String>,
     )
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val modeData = promptDrafts.observeActiveMode().flatMapLatest { mode ->
-        combine(
-            promptDrafts.observeDraft(mode),
-            hrSettings.observeHr(mode),
-            modulesSelection.observeModules(mode),
-        ) { draft, hr, modules ->
-            ModeData(mode, draft.prompt, draft.negativePrompt, hr, modules)
-        }
+    private val draftData = combine(
+        promptDrafts.observeDraft(),
+        hrSettings.observeHr(),
+        modulesSelection.observeModules(),
+    ) { draft, hr, modules ->
+        DraftData(draft.prompt, draft.negativePrompt, hr, modules)
     }
 
     private data class ModelsState(
@@ -153,7 +146,7 @@ class GenerateViewModel @Inject constructor(
 
     private data class Base(
         val rest: GenerationParams,
-        val mode: ModeData,
+        val draft: DraftData,
         val models: ModelsState,
         val catalog: CatalogLists,
         val misc: Misc,
@@ -161,12 +154,12 @@ class GenerateViewModel @Inject constructor(
 
     private val base = combine(
         rest,
-        modeData,
+        draftData,
         modelsState,
         catalog,
         misc,
-    ) { r, md, ms, c, mi ->
-        Base(r, md, ms, c, mi)
+    ) { r, dd, ms, c, mi ->
+        Base(r, dd, ms, c, mi)
     }
 
     val uiState: StateFlow<GenerateUiState> = combine(
@@ -174,7 +167,7 @@ class GenerateViewModel @Inject constructor(
         inputs,
     ) { b, inp ->
         val r = b.rest
-        val md = b.mode
+        val md = b.draft
         val ms = b.models
         val c = b.catalog
         val mi = b.misc
@@ -182,7 +175,6 @@ class GenerateViewModel @Inject constructor(
             params = r.copy(
                 prompt = inp.prompt.text,
                 negativePrompt = inp.negativePrompt.text,
-                mode = md.mode,
                 enableHr = md.hr.enable,
                 hrUpscaler = md.hr.upscaler,
                 hrScale = md.hr.scale,
@@ -219,73 +211,78 @@ class GenerateViewModel @Inject constructor(
             if (config.isConfigured) initializeEngine(silent = true)
         }
         viewModelScope.launch {
-            modeData.collect { md -> mergeExternal(md) }
+            draftData.collect { dd -> mergeExternal(dd) }
         }
         viewModelScope.launch {
             // Saved defaults first, Analyze handoff wins when present.
-            applyDefaultsFor(promptDrafts.observeActiveMode().first())
-            handoff.consume()?.let { r ->
-                val cur = rest.value
-                rest.value = cur.copy(
-                    steps = r.steps ?: cur.steps,
-                    sampler = r.sampler ?: cur.sampler,
-                    scheduler = r.scheduler ?: cur.scheduler,
-                    cfgScale = r.cfgScale ?: cur.cfgScale,
-                    distilledCfgScale = r.distilledCfgScale ?: cur.distilledCfgScale,
-                    seed = r.seed ?: cur.seed,
-                    width = r.width ?: cur.width,
-                    height = r.height ?: cur.height,
-                    modelTitle = r.modelTitle ?: cur.modelTitle,
-                )
-                r.additionalModules?.let { modules ->
-                    // Handoff targets the active mode (Analyze restores into current mode).
-                    val mode = promptDrafts.observeActiveMode().first()
-                    modulesSelection.saveModules(mode, modules)
+            applyDefaults()
+            seedNumericInputsFromRest()
+            handoff.observe().collect { r ->
+                if (r != null) {
+                    applyHandoff(r)
+                    handoff.consume()
+                    seedNumericInputsFromRest()
                 }
             }
-            seedNumericInputsFromRest()
+        }
+    }
+
+    /** Overlays Analyze handoff fields over current params (cold start + warm reuse). */
+    private suspend fun applyHandoff(r: RestoredParams) {
+        val cur = rest.value
+        rest.value = cur.copy(
+            steps = r.steps ?: cur.steps,
+            sampler = r.sampler ?: cur.sampler,
+            scheduler = r.scheduler ?: cur.scheduler,
+            cfgScale = r.cfgScale ?: cur.cfgScale,
+            seed = r.seed ?: cur.seed,
+            width = r.width ?: cur.width,
+            height = r.height ?: cur.height,
+            modelTitle = r.modelTitle ?: cur.modelTitle,
+        )
+        r.additionalModules?.let { modules ->
+            modulesSelection.saveModules(modules)
         }
     }
 
     /**
-     * Saved user defaults over the hardcoded [defaultParamsFor]: non-blank
+     * Saved user defaults over the hardcoded [defaultParams]: non-blank
      * stored values win for model/sampler/scheduler; blank drafts are filled
      * from stored prompts; the upscaler default applies while HR still holds
      * the stock value (explicit user picks persist live and are kept).
      */
-    private suspend fun applyDefaultsFor(mode: GenerationMode) {
-        val base = defaultParamsFor(mode)
-        val d = defaults.observeDefaults(mode).first()
+    private suspend fun applyDefaults() {
+        val base = defaultParams()
+        val d = defaults.observeDefaults().first()
         rest.value = base.copy(
             modelTitle = d.modelTitle.ifBlank { base.modelTitle },
             sampler = d.sampler.ifBlank { base.sampler },
             scheduler = d.scheduler.ifBlank { base.scheduler },
         )
-        val draft = promptDrafts.observeDraft(mode).first()
+        val draft = promptDrafts.observeDraft().first()
         if ((draft.prompt.isBlank() && d.prompt.isNotBlank()) ||
             (draft.negativePrompt.isBlank() && d.negativePrompt.isNotBlank())
         ) {
             promptDrafts.setPrompt(
-                mode,
                 draft.prompt.ifBlank { d.prompt },
                 draft.negativePrompt.ifBlank { d.negativePrompt },
             )
         }
-        val hr = hrSettings.observeHr(mode).first()
+        val hr = hrSettings.observeHr().first()
         if (hr.upscaler == HrSettings().upscaler && d.upscaler.isNotBlank()) {
-            hrSettings.saveHr(mode, hr.copy(upscaler = d.upscaler))
+            hrSettings.saveHr(hr.copy(upscaler = d.upscaler))
         }
     }
 
     /**
-     * Merges an external draft/HR emission (LoRA/Styles append, MagicPrompt,
-     * defaults fill, handoff, mode switch) into raw inputs, preserving
+     * Merges an external draft/HR emission (LoRA/Styles appends, defaults fill,
+     * handoff) into raw inputs, preserving
      * in-progress typing and cursor via [adoptExternal].
      *
      * Own echoes (emissions equal to [lastWrittenPrompt]/[lastWrittenNeg]/
      * [lastHrSaved]) are ignored so the cursor never jumps while typing.
      */
-    private fun mergeExternal(md: ModeData) {
+    private fun mergeExternal(md: DraftData) {
         val cur = inputs.value
         var next = cur
         var changed = false
@@ -299,8 +296,7 @@ class GenerateViewModel @Inject constructor(
             lastWrittenNeg = md.negativePrompt
             changed = true
         }
-        val modeChanged = lastMode != null && lastMode != md.mode
-        if (lastMode == null || modeChanged || md.hr != lastHrSaved) {
+        if (lastHrSaved == null || md.hr != lastHrSaved) {
             next = next.copy(
                 hrUpscaler = adoptExternal(next.hrUpscaler, md.hr.upscaler),
                 hrScale = textField(md.hr.scale.toString()),
@@ -311,11 +307,10 @@ class GenerateViewModel @Inject constructor(
             lastHrSaved = md.hr
             changed = true
         }
-        if (lastMode != md.mode) lastMode = md.mode
         if (changed) inputs.value = next
     }
 
-    /** Re-seeds numeric raws from committed [rest] (init, handoff, mode switch, presets). */
+    /** Re-seeds numeric raws from committed [rest] (init, handoff, presets). */
     private fun seedNumericInputsFromRest() {
         val r = rest.value
         inputs.value = inputs.value.copy(
@@ -326,7 +321,6 @@ class GenerateViewModel @Inject constructor(
             batchCount = textField(r.batchCount.toString()),
             steps = textField(r.steps.toString()),
             cfg = textField(r.cfgScale.toString()),
-            distilled = textField(r.distilledCfgScale.toString()),
         )
     }
 
@@ -348,18 +342,16 @@ class GenerateViewModel @Inject constructor(
         parseBoundedInt(cur.batchSize.text, 1, 4)?.let { r = r.copy(batchSize = it) }
         parseBoundedInt(cur.batchCount.text, 1, 8)?.let { r = r.copy(batchCount = it) }
         parseBoundedInt(cur.steps.text, 1, 50)?.let { r = r.copy(steps = it) }
-        parseBoundedDouble(cur.cfg.text, 0.0, 15.0)?.let { r = r.copy(cfgScale = it) }
-        parseDoubleComplete(cur.distilled.text)?.let { r = r.copy(distilledCfgScale = it) }
+        parseBoundedDouble(cur.cfg.text, 0.0, 15.0)?.let { r = r.copy(cfgScale = snapCfg(it)) }
         if (r != rest.value) rest.value = r
 
         val success = uiState.value as? GenerateUiState.Success
-        val mode = success?.params?.mode ?: lastMode ?: GenerationMode.SDXL
         if (cur.prompt.text != lastWrittenPrompt || cur.negativePrompt.text != lastWrittenNeg) {
             lastWrittenPrompt = cur.prompt.text
             lastWrittenNeg = cur.negativePrompt.text
             val p = cur.prompt.text
             val n = cur.negativePrompt.text
-            viewModelScope.launch { promptDrafts.setPrompt(mode, p, n) }
+            viewModelScope.launch { promptDrafts.setPrompt(p, n) }
         }
 
         val currentHr = success?.hr ?: lastHrSaved ?: HrSettings()
@@ -372,7 +364,7 @@ class GenerateViewModel @Inject constructor(
         )
         if (parsedHr != currentHr) {
             lastHrSaved = parsedHr
-            viewModelScope.launch { hrSettings.saveHr(mode, parsedHr) }
+            viewModelScope.launch { hrSettings.saveHr(parsedHr) }
         }
     }
 
@@ -392,7 +384,6 @@ class GenerateViewModel @Inject constructor(
         return r.copy(
             prompt = cur.prompt.text,
             negativePrompt = cur.negativePrompt.text,
-            mode = success.params.mode,
             additionalModules = success.params.additionalModules,
             enableHr = hr.enable,
             hrUpscaler = hr.upscaler,
@@ -405,7 +396,6 @@ class GenerateViewModel @Inject constructor(
 
     fun onAction(action: GenerateAction) {
         val current = (uiState.value as? GenerateUiState.Success) ?: return
-        val p = current.params
         when (action) {
             is GenerateAction.PromptChanged -> {
                 inputs.value = inputs.value.copy(prompt = action.value)
@@ -413,8 +403,7 @@ class GenerateViewModel @Inject constructor(
                 lastWrittenNeg = inputs.value.negativePrompt.text
                 val prompt = action.value.text
                 val neg = inputs.value.negativePrompt.text
-                val mode = p.mode
-                viewModelScope.launch { promptDrafts.setPrompt(mode, prompt, neg) }
+                viewModelScope.launch { promptDrafts.setPrompt(prompt, neg) }
             }
             is GenerateAction.NegChanged -> {
                 inputs.value = inputs.value.copy(negativePrompt = action.value)
@@ -422,21 +411,14 @@ class GenerateViewModel @Inject constructor(
                 lastWrittenPrompt = inputs.value.prompt.text
                 val prompt = inputs.value.prompt.text
                 val neg = action.value.text
-                val mode = p.mode
-                viewModelScope.launch { promptDrafts.setPrompt(mode, prompt, neg) }
-            }
-            is GenerateAction.ModeChanged -> viewModelScope.launch {
-                commitInputs()
-                applyDefaultsFor(action.mode)
-                promptDrafts.setActiveMode(action.mode)
-                seedNumericInputsFromRest()
+                viewModelScope.launch { promptDrafts.setPrompt(prompt, neg) }
             }
             GenerateAction.ClearPrompt -> viewModelScope.launch {
                 val neg = inputs.value.negativePrompt.text
                 inputs.value = inputs.value.copy(prompt = TextFieldValue(""))
                 lastWrittenPrompt = ""
                 lastWrittenNeg = neg
-                promptDrafts.setPrompt(p.mode, "", neg)
+                promptDrafts.setPrompt("", neg)
                 statusMessage.value = "Prompt cleared."
             }
             GenerateAction.ClearNegative -> viewModelScope.launch {
@@ -444,7 +426,7 @@ class GenerateViewModel @Inject constructor(
                 inputs.value = inputs.value.copy(negativePrompt = TextFieldValue(""))
                 lastWrittenNeg = ""
                 lastWrittenPrompt = prompt
-                promptDrafts.setPrompt(p.mode, prompt, "")
+                promptDrafts.setPrompt(prompt, "")
                 statusMessage.value = "Negative prompt cleared."
             }
             is GenerateAction.SaveDefault -> viewModelScope.launch {
@@ -456,12 +438,12 @@ class GenerateViewModel @Inject constructor(
                     DefaultField.SCHEDULER -> rest.value.scheduler
                     DefaultField.UPSCALER -> inputs.value.hrUpscaler.text.ifBlank { current.hr.upscaler }
                 }
-                defaults.saveDefault(p.mode, action.field, value)
+                defaults.saveDefault(action.field, value)
                 statusMessage.value = "Saved as default."
             }
             is GenerateAction.ModelChanged -> rest.value = rest.value.copy(modelTitle = action.value)
             is GenerateAction.ModulesChanged -> viewModelScope.launch {
-                modulesSelection.saveModules(p.mode, action.value)
+                modulesSelection.saveModules(action.value)
             }
             is GenerateAction.SamplerChanged -> rest.value = rest.value.copy(sampler = action.value)
             is GenerateAction.SchedulerChanged -> rest.value = rest.value.copy(scheduler = action.value)
@@ -472,9 +454,6 @@ class GenerateViewModel @Inject constructor(
             is GenerateAction.CfgChanged -> {
                 rest.value = rest.value.copy(cfgScale = action.value)
                 inputs.value = inputs.value.copy(cfg = textField(action.value.toString()))
-            }
-            is GenerateAction.DistilledChanged -> {
-                inputs.value = inputs.value.copy(distilled = action.value)
             }
             is GenerateAction.WidthChanged -> {
                 inputs.value = inputs.value.copy(width = action.value)
@@ -509,7 +488,7 @@ class GenerateViewModel @Inject constructor(
             GenerateAction.HrToggled -> {
                 val newHr = current.hr.copy(enable = !current.hr.enable)
                 lastHrSaved = newHr
-                viewModelScope.launch { hrSettings.saveHr(p.mode, newHr) }
+                viewModelScope.launch { hrSettings.saveHr(newHr) }
             }
             is GenerateAction.HrUpscalerChanged -> {
                 inputs.value = inputs.value.copy(hrUpscaler = action.value)
@@ -577,10 +556,9 @@ class GenerateViewModel @Inject constructor(
                 modelsState.value = modelsState.value.copy(modules = modulesResult.data)
                 // Drop persisted selections the server no longer offers (renamed/deleted files).
                 val known = modulesResult.data.toSet()
-                val mode = promptDrafts.observeActiveMode().first()
-                val current = modulesSelection.observeModules(mode).first()
+                val current = modulesSelection.observeModules().first()
                 val pruned = current.filter { it in known }
-                if (pruned.size != current.size) modulesSelection.saveModules(mode, pruned)
+                if (pruned.size != current.size) modulesSelection.saveModules(pruned)
             }
             if (upscalersResult is Result.Success) {
                 modelsState.value = modelsState.value.copy(upscalers = upscalersResult.data)
@@ -682,14 +660,12 @@ sealed interface GenerateAction {
     data object ClearPrompt : GenerateAction
     data object ClearNegative : GenerateAction
     data class SaveDefault(val field: DefaultField) : GenerateAction
-    data class ModeChanged(val mode: GenerationMode) : GenerateAction
     data class ModelChanged(val value: String) : GenerateAction
     data class ModulesChanged(val value: List<String>) : GenerateAction
     data class SamplerChanged(val value: String) : GenerateAction
     data class SchedulerChanged(val value: String) : GenerateAction
     data class StepsChanged(val value: Int) : GenerateAction
     data class CfgChanged(val value: Double) : GenerateAction
-    data class DistilledChanged(val value: TextFieldValue) : GenerateAction
     data class WidthChanged(val value: TextFieldValue) : GenerateAction
     data class HeightChanged(val value: TextFieldValue) : GenerateAction
     data class SizeChanged(val width: Int, val height: Int) : GenerateAction

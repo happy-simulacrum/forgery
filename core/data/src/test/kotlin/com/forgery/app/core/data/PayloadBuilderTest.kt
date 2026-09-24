@@ -1,16 +1,13 @@
 package com.forgery.app.core.data
 
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PayloadBuilderTest {
 
     private val base = GenerationParams(
-        mode = GenerationMode.SDXL,
         prompt = "a cat",
         negativePrompt = "blurry",
         steps = 20,
@@ -76,30 +73,12 @@ class PayloadBuilderTest {
     }
 
     @Test
-    fun `flux payload contains distilled_cfg_scale`() {
-        val p = buildTxt2ImgPayload(base.copy(mode = GenerationMode.FLUX))
-        assertTrue(p.containsKey("distilled_cfg_scale"))
-        assertEquals(3.5, p["distilled_cfg_scale"])
+    fun `payload never carries distilled_cfg_scale`() {
+        assertFalse(buildTxt2ImgPayload(base).containsKey("distilled_cfg_scale"))
     }
 
     @Test
-    fun `sdxl payload omits distilled_cfg_scale`() {
-        assertFalse(buildTxt2ImgPayload(base.copy(mode = GenerationMode.SDXL)).containsKey("distilled_cfg_scale"))
-    }
-
-    @Test
-    fun `qwen payload omits distilled_cfg_scale`() {
-        assertFalse(buildTxt2ImgPayload(base.copy(mode = GenerationMode.QWEN)).containsKey("distilled_cfg_scale"))
-    }
-
-    @Test
-    fun `flux custom distilled value is passed through`() {
-        val p = buildTxt2ImgPayload(base.copy(mode = GenerationMode.FLUX, distilledCfgScale = 5.0))
-        assertEquals(5.0, p["distilled_cfg_scale"])
-    }
-
-    @Test
-    fun `sdxl modules land in override_settings`() {
+    fun `modules land in override_settings`() {
         val p = buildTxt2ImgPayload(base.copy(additionalModules = listOf("ae.safetensors")))
         @Suppress("UNCHECKED_CAST")
         val overrides = p["override_settings"] as Map<String, Any?>
@@ -107,20 +86,10 @@ class PayloadBuilderTest {
     }
 
     @Test
-    fun `sdxl empty modules sent as empty list to mask stale server global`() {
+    fun `empty modules sent as empty list to mask stale server global`() {
         @Suppress("UNCHECKED_CAST")
         val overrides = buildTxt2ImgPayload(base)["override_settings"] as Map<String, Any?>
         assertEquals(emptyList<String>(), overrides["forge_additional_modules"])
-    }
-
-    @Test
-    fun `modules omitted outside sdxl`() {
-        val p = buildTxt2ImgPayload(
-            base.copy(mode = GenerationMode.FLUX, additionalModules = listOf("ae.safetensors")),
-        )
-        @Suppress("UNCHECKED_CAST")
-        val overrides = p["override_settings"] as Map<String, Any?>
-        assertFalse(overrides.containsKey("forge_additional_modules"))
     }
 
     @Test
@@ -151,16 +120,7 @@ class PayloadBuilderTest {
         val overrides =
             buildTxt2ImgPayload(base.copy(modelTitle = ""))["override_settings"] as Map<String, Any?>
         assertFalse(overrides.containsKey("sd_model_checkpoint"))
-        // SDXL modules key still masks the stale global.
+        // Modules key still masks the stale global.
         assertEquals(emptyList<String>(), overrides["forge_additional_modules"])
-    }
-
-    @Test
-    fun `blank model outside sdxl omits override_settings entirely`() {
-        assertFalse(
-            buildTxt2ImgPayload(
-                base.copy(mode = GenerationMode.FLUX, modelTitle = ""),
-            ).containsKey("override_settings"),
-        )
     }
 }

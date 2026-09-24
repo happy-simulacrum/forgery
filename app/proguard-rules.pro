@@ -30,9 +30,7 @@
 -keepclassmembers class ** { @kotlinx.serialization.Serializable *; }
 
 # Retrofit service contracts — R8 full mode keeps the generic rules, this is
-# belt and braces so release can never lose Forge/Llm endpoints to shrinking.
+# belt and braces so release can never lose Forge endpoints to shrinking.
 -keep interface com.forgery.app.core.network.ForgeService { *; }
--keep interface com.forgery.app.core.network.LlmService { *; }
 -keep class com.forgery.app.core.network.ForgeApiFactory { *; }
--keep class com.forgery.app.core.network.LlmApiFactory { *; }
 -keep class com.jakewharton.retrofit2.converter.kotlinx.serialization.** { *; }

@@ -4,10 +4,10 @@ import androidx.navigation.NavController
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class LoraRoute(val mode: String? = null)
+data object LoraRoute
 
 const val LORA_ROUTE = "lora"
 
-fun NavController.navigateToLora(mode: String? = null) {
-    navigate(LoraRoute(mode))
+fun NavController.navigateToLora() {
+    navigate(LoraRoute)
 }

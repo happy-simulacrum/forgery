@@ -1,7 +1,6 @@
 package com.forgery.app.core.data
 
 import com.forgery.app.core.datastore.ForgeryPreferencesDataSource
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.PromptDraft
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,16 +17,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Shared prompt text per generation mode. GEN/INP edit it, LoRA browser,
- * Styles and Magic Prompt append/inject into it (legacy: direct writes to
- * `{mode}_prompt` localStorage keys + `updateGenTabs`).
+ * Shared prompt text. GEN/INP edit it, LoRA browser and
+ * Styles append/inject into it (legacy: direct writes to
+ * localStorage keys + `updateGenTabs`).
  */
 interface PromptDraftRepository {
-    fun observeDraft(mode: GenerationMode): Flow<PromptDraft>
-    fun observeActiveMode(): Flow<GenerationMode>
-    suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String)
-    suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String = "")
-    suspend fun setActiveMode(mode: GenerationMode)
+    fun observeDraft(): Flow<PromptDraft>
+    suspend fun setPrompt(prompt: String, negativePrompt: String)
+    suspend fun appendPrompt(text: String, negativeText: String = "")
 }
 
 @Singleton
@@ -39,41 +36,35 @@ class DefaultPromptDraftRepository @Inject constructor(
      * Keystrokes land here synchronously (android_crm-style: in-memory first),
      * disk flush follows after [flushDelayMs] of quiet. While the user types
      * (e.g. hold-delete), no store echo races the IME — the cursor stays put.
-     * All writers (GEN/INP typing, LoRA/Styles/MagicPrompt appends) funnel
+     * All writers (GEN/INP typing, LoRA/Styles appends) funnel
      * through this pipe, so appends compose onto unflushed typing instead of
      * interleaving with it.
      */
-    private val pending = MutableStateFlow<Map<GenerationMode, PromptDraft>>(emptyMap())
+    private val pending = MutableStateFlow<PromptDraft?>(null)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var flushJob: Job? = null
 
     // Visible for testing: same-module tests drive the flush deterministically.
     internal var flushDelayMs: Long = DRAFT_FLUSH_DELAY_MS
 
-    override fun observeDraft(mode: GenerationMode): Flow<PromptDraft> =
-        combine(prefs.observePromptDraft(mode), pending) { disk, p ->
-            p[mode] ?: disk
+    override fun observeDraft(): Flow<PromptDraft> =
+        combine(prefs.observePromptDraft(), pending) { disk, p ->
+            p ?: disk
         }
 
-    override fun observeActiveMode(): Flow<GenerationMode> = prefs.observeActiveMode()
-
-    override suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String) {
-        pending.update { it + (mode to PromptDraft(prompt, negativePrompt)) }
+    override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        pending.update { PromptDraft(prompt, negativePrompt) }
         scheduleFlush()
     }
 
-    override suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String) {
+    override suspend fun appendPrompt(text: String, negativeText: String) {
         // Read synchronously via first() — callers are already in coroutines.
         // Pending-aware: appends compose onto unflushed typing.
-        val base = pending.value[mode] ?: prefs.observePromptDraft(mode).first()
+        val base = pending.value ?: prefs.observePromptDraft().first()
         val prompt = (base.prompt + " " + text).trim()
         val neg = (base.negativePrompt + " " + negativeText).trim()
-        pending.update { it + (mode to PromptDraft(prompt, neg)) }
+        pending.update { PromptDraft(prompt, neg) }
         scheduleFlush()
-    }
-
-    override suspend fun setActiveMode(mode: GenerationMode) {
-        prefs.saveActiveMode(mode)
     }
 
     private fun scheduleFlush() {
@@ -85,13 +76,12 @@ class DefaultPromptDraftRepository @Inject constructor(
     }
 
     private suspend fun flush() {
-        val snapshot = pending.value
-        if (snapshot.isEmpty()) return
-        snapshot.forEach { (mode, draft) -> prefs.savePromptDraft(mode, draft) }
-        // Drop only entries unchanged since the snapshot; newer typing
-        // re-arms the flush instead of being lost.
-        pending.update { cur -> cur.filterKeys { mode -> cur[mode] != snapshot[mode] } }
-        if (pending.value.isNotEmpty()) scheduleFlush()
+        val snapshot = pending.value ?: return
+        prefs.savePromptDraft(snapshot)
+        // Drop only when unchanged since the snapshot; newer typing re-arms
+        // the flush instead of being lost.
+        pending.update { cur -> if (cur == snapshot) null else cur }
+        if (pending.value != null) scheduleFlush()
     }
 
     // Visible for testing: same-module tests drive the flush deterministically.

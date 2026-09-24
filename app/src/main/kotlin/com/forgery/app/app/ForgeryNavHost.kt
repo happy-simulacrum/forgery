@@ -25,7 +25,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import com.forgery.app.feature.analyze.impl.analyzeScreen
 import com.forgery.app.feature.gallery.api.GalleryDetailRoute
@@ -38,12 +37,8 @@ import com.forgery.app.feature.inpaint.api.InpaintRoute
 import com.forgery.app.feature.inpaint.impl.inpaintScreen
 import com.forgery.app.feature.lora.api.LoraRoute
 import com.forgery.app.feature.lora.impl.loraScreen
-import com.forgery.app.feature.magicprompt.api.MagicpromptRoute
-import com.forgery.app.feature.magicprompt.impl.magicpromptScreen
 import com.forgery.app.feature.modules.api.ModulesRoute
 import com.forgery.app.feature.modules.impl.modulesScreen
-import com.forgery.app.feature.power.api.PowerRoute
-import com.forgery.app.feature.power.impl.powerScreen
 import com.forgery.app.feature.queue.api.QueueRoute
 import com.forgery.app.feature.queue.impl.queueScreen
 import com.forgery.app.feature.settings.api.SettingsRoute
@@ -122,15 +117,13 @@ fun ForgeryNavHost(
             generateScreen(
                 onBackClick = {},
                 onNavigateToQueue = { nav.navigate(QueueRoute()) },
-                onNavigateToLora = { mode -> nav.navigate(LoraRoute(mode.name)) },
-                onNavigateToStyles = { mode -> nav.navigate(StylesRoute(mode.name)) },
-                onNavigateToMagic = { mode -> nav.navigate(MagicpromptRoute(mode.name)) },
-                onNavigateToPower = { nav.navigate(PowerRoute()) },
-                onNavigateToModules = { mode -> nav.navigate(ModulesRoute(mode.name)) },
+                onNavigateToLora = { nav.navigate(LoraRoute) },
+                onNavigateToStyles = { nav.navigate(StylesRoute) },
+                onNavigateToModules = { nav.navigate(ModulesRoute) },
             )
             inpaintScreen(
                 onBackClick = {},
-                onNavigateToModules = { nav.navigate(ModulesRoute(GenerationMode.SDXL.name)) },
+                onNavigateToModules = { nav.navigate(ModulesRoute) },
             )
             queueScreen(onBackClick = {})
             galleryScreen(
@@ -153,8 +146,6 @@ fun ForgeryNavHost(
             loraScreen(onBackClick = { nav.popBackStack() })
             modulesScreen(onBackClick = { nav.popBackStack() })
             stylesScreen(onBackClick = { nav.popBackStack() })
-            magicpromptScreen(onBackClick = { nav.popBackStack() })
-            powerScreen(onBackClick = { nav.popBackStack() })
         }
     }
 }

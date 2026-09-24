@@ -4,7 +4,6 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.forgery.app.core.datastore.ForgeryPreferencesDataSource
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenDefaults
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.testing.TestDispatcherRule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,21 +34,18 @@ class DefaultsRepositoryTest {
     @Test
     fun `empty by default`() = runTest {
         val repo = repo()
-        GenerationMode.entries.forEach { mode ->
-            assertEquals(GenDefaults(), repo.observeDefaults(mode).first())
-        }
+        assertEquals(GenDefaults(), repo.observeDefaults().first())
     }
 
     @Test
     fun `round-trip saves and observes all fields`() = runTest {
         val repo = repo()
-        val mode = GenerationMode.SDXL
-        repo.saveDefault(mode, DefaultField.PROMPT, "a cat")
-        repo.saveDefault(mode, DefaultField.NEGATIVE, "blurry")
-        repo.saveDefault(mode, DefaultField.MODEL, "model.safetensors")
-        repo.saveDefault(mode, DefaultField.SAMPLER, "Euler")
-        repo.saveDefault(mode, DefaultField.SCHEDULER, "Normal")
-        repo.saveDefault(mode, DefaultField.UPSCALER, "Latent")
+        repo.saveDefault(DefaultField.PROMPT, "a cat")
+        repo.saveDefault(DefaultField.NEGATIVE, "blurry")
+        repo.saveDefault(DefaultField.MODEL, "model.safetensors")
+        repo.saveDefault(DefaultField.SAMPLER, "Euler")
+        repo.saveDefault(DefaultField.SCHEDULER, "Normal")
+        repo.saveDefault(DefaultField.UPSCALER, "Latent")
         assertEquals(
             GenDefaults(
                 prompt = "a cat",
@@ -59,24 +55,11 @@ class DefaultsRepositoryTest {
                 scheduler = "Normal",
                 upscaler = "Latent",
             ),
-            repo.observeDefaults(mode).first(),
+            repo.observeDefaults().first(),
         )
         // Overwrite of a single field keeps the rest.
-        repo.saveDefault(mode, DefaultField.PROMPT, "a dog")
-        assertEquals("a dog", repo.observeDefaults(mode).first().prompt)
-        assertEquals("Euler", repo.observeDefaults(mode).first().sampler)
-    }
-
-    @Test
-    fun `modes are isolated`() = runTest {
-        val repo = repo()
-        repo.saveDefault(GenerationMode.SDXL, DefaultField.PROMPT, "xl prompt")
-        repo.saveDefault(GenerationMode.FLUX, DefaultField.PROMPT, "flux prompt")
-        repo.saveDefault(GenerationMode.FLUX, DefaultField.SAMPLER, "FluxSampler")
-        assertEquals("xl prompt", repo.observeDefaults(GenerationMode.SDXL).first().prompt)
-        assertEquals("", repo.observeDefaults(GenerationMode.SDXL).first().sampler)
-        assertEquals("flux prompt", repo.observeDefaults(GenerationMode.FLUX).first().prompt)
-        assertEquals("FluxSampler", repo.observeDefaults(GenerationMode.FLUX).first().sampler)
-        assertEquals(GenDefaults(), repo.observeDefaults(GenerationMode.QWEN).first())
+        repo.saveDefault(DefaultField.PROMPT, "a dog")
+        assertEquals("a dog", repo.observeDefaults().first().prompt)
+        assertEquals("Euler", repo.observeDefaults().first().sampler)
     }
 }

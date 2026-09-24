@@ -13,7 +13,6 @@ import com.forgery.app.core.common.readPngMetadata
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.PromptDraftRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,8 +49,8 @@ class AnalyzeViewModel @Inject constructor(
     private val parsed = MutableStateFlow<Parsed?>(null)
     private val statusMessage = MutableStateFlow<String?>(null)
 
-    private val _copyDone = MutableSharedFlow<GenerationMode>(extraBufferCapacity = 1)
-    val copyDone: SharedFlow<GenerationMode> = _copyDone.asSharedFlow()
+    private val _copyDone = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val copyDone: SharedFlow<Unit> = _copyDone.asSharedFlow()
 
     private data class Parsed(
         val prompt: String,
@@ -92,7 +91,7 @@ class AnalyzeViewModel @Inject constructor(
                 parsed.value = null
                 statusMessage.value = null
             }
-            is AnalyzeAction.CopyToMode -> copyToMode(action.mode)
+            is AnalyzeAction.UseAgain -> copyTo()
             AnalyzeAction.DismissStatus -> statusMessage.value = null
         }
     }
@@ -123,30 +122,29 @@ class AnalyzeViewModel @Inject constructor(
         }
     }
 
-    private fun copyToMode(mode: GenerationMode) {
+    private fun copyTo() {
         viewModelScope.launch {
             val p = parsed.value
             if (p == null || p.raw == null) {
                 statusMessage.value = "Nothing to copy."
-                _copyDone.tryEmit(mode)
+                _copyDone.tryEmit(Unit)
                 return@launch
             }
-            promptDrafts.setPrompt(mode, p.prompt, p.negativePrompt)
-            promptDrafts.setActiveMode(mode)
+            promptDrafts.setPrompt(p.prompt, p.negativePrompt)
             val s = p.settings
             // Persist HR only when the image carried parseable settings;
             // empty (all-null) or missing settings leave HR untouched.
-            // Merge into current HR (keep existing cfg + fallbacks) instead of overwrite.
+            // Merge into current HR (overwrite cfg) instead of keeping existing cfg.
             if (s != null && s != A1111Settings()) {
-                val cur = hrSettings.observeHr(mode).first()
+                val cur = hrSettings.observeHr().first()
                 hrSettings.saveHr(
-                    mode,
                     cur.copy(
                         enable = s.hrEnable,
                         upscaler = s.hrUpscaler ?: cur.upscaler,
                         scale = s.hrScale ?: cur.scale,
                         steps = s.hrSteps ?: cur.steps,
                         denoise = s.hrDenoise ?: cur.denoise,
+                        cfg = s.cfg ?: cur.cfg,
                     ),
                 )
             }
@@ -160,11 +158,14 @@ class AnalyzeViewModel @Inject constructor(
                     width = s?.width,
                     height = s?.height,
                     modelTitle = s?.model,
+                    additionalModules = s?.vae?.takeIf {
+                        it.isNotBlank() && it != "Automatic" && it != "None"
+                    }?.let { listOf(it) },
                     hr = null,
                 ),
             )
-            statusMessage.value = "Copied to ${mode.name}"
-            _copyDone.tryEmit(mode)
+            statusMessage.value = "Copied to prompt"
+            _copyDone.tryEmit(Unit)
         }
     }
 }
@@ -190,6 +191,6 @@ private fun buildSettingsSummary(s: A1111Settings): String? {
 sealed interface AnalyzeAction {
     data class PickResult(val uri: String) : AnalyzeAction
     data object Clear : AnalyzeAction
-    data class CopyToMode(val mode: GenerationMode) : AnalyzeAction
+    data object UseAgain : AnalyzeAction
     data object DismissStatus : AnalyzeAction
 }

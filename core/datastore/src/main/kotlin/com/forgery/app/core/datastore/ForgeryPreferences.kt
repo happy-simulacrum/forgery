@@ -11,7 +11,6 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenDefaults
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.UiPrefs
@@ -24,76 +23,29 @@ import javax.inject.Singleton
 object PrefsKeys {
     val BASE_IP = stringPreferencesKey("bojro_base_ip")
     val PORT_WEBUI = intPreferencesKey("bojro_port_webui")
-    val PORT_COMFY = intPreferencesKey("bojro_port_comfy")
-    val PORT_LLM = intPreferencesKey("bojro_port_llm")
-    val PORT_WAKE = intPreferencesKey("bojro_port_wake")
     val EXT_FORGE = stringPreferencesKey("bojro_ext_forge")
-    val EXT_WAKE = stringPreferencesKey("bojro_ext_wake")
     val IS_REMOTE = booleanPreferencesKey("bojro_is_remote")
     val IS_CLOUDFLARE = booleanPreferencesKey("bojro_is_cloudflare")
     val CF_ID = stringPreferencesKey("bojro_cf_id")
     val CF_SECRET = stringPreferencesKey("bojro_cf_secret")
     val IS_CONFIGURED = booleanPreferencesKey("bojro_is_configured")
     val THEME_DARK = booleanPreferencesKey("bojro_theme_dark")
-    val SHOW_XL = booleanPreferencesKey("bojro_show_xl")
-    val SHOW_FLUX = booleanPreferencesKey("bojro_show_flux")
-    val SHOW_QWEN = booleanPreferencesKey("bojro_show_qwen")
-    val SHOW_COMFY = booleanPreferencesKey("bojro_show_comfy")
-    val MODEL_XL = stringPreferencesKey("bojro_model_xl")
-    val MODEL_FLUX = stringPreferencesKey("bojro_model_flux")
-    val MODEL_QWEN = stringPreferencesKey("bojro_model_qwen")
-    val MODEL_INP = stringPreferencesKey("bojro_model_inp")
-    val PROMPT_XL = stringPreferencesKey("bojro_prompt_xl")
-    val PROMPT_FLUX = stringPreferencesKey("bojro_prompt_flux")
-    val PROMPT_QWEN = stringPreferencesKey("bojro_prompt_qwen")
-    val PROMPT_INP = stringPreferencesKey("bojro_prompt_inp")
-    val NEG_XL = stringPreferencesKey("bojro_neg_xl")
-    val NEG_FLUX = stringPreferencesKey("bojro_neg_flux")
-    val NEG_QWEN = stringPreferencesKey("bojro_neg_qwen")
-    val NEG_INP = stringPreferencesKey("bojro_neg_inp")
-    val ACTIVE_MODE = stringPreferencesKey("bojro_active_mode")
+    val PROMPT = stringPreferencesKey("bojro_prompt")
+    val NEG = stringPreferencesKey("bojro_neg")
     val LORA_FAVS = stringSetPreferencesKey("bojro_lora_favs")
-    val LLM_KEY = stringPreferencesKey("bojro_llm_key")
-    val LLM_MODEL = stringPreferencesKey("bojro_llm_model")
-    val HR_ENABLE_XL = booleanPreferencesKey("bojro_xl_hr_enable")
-    val HR_ENABLE_FLUX = booleanPreferencesKey("bojro_flux_hr_enable")
-    val HR_ENABLE_QWEN = booleanPreferencesKey("bojro_qwen_hr_enable")
-    val HR_UPSCALER_XL = stringPreferencesKey("bojro_xl_hr_upscaler")
-    val HR_UPSCALER_FLUX = stringPreferencesKey("bojro_flux_hr_upscaler")
-    val HR_UPSCALER_QWEN = stringPreferencesKey("bojro_qwen_hr_upscaler")
-    val HR_SCALE_XL = doublePreferencesKey("bojro_xl_hr_scale")
-    val HR_SCALE_FLUX = doublePreferencesKey("bojro_flux_hr_scale")
-    val HR_SCALE_QWEN = doublePreferencesKey("bojro_qwen_hr_scale")
-    val HR_STEPS_XL = intPreferencesKey("bojro_xl_hr_steps")
-    val HR_STEPS_FLUX = intPreferencesKey("bojro_flux_hr_steps")
-    val HR_STEPS_QWEN = intPreferencesKey("bojro_qwen_hr_steps")
-    val HR_DENOISE_XL = doublePreferencesKey("bojro_xl_hr_denoise")
-    val HR_DENOISE_FLUX = doublePreferencesKey("bojro_flux_hr_denoise")
-    val HR_DENOISE_QWEN = doublePreferencesKey("bojro_qwen_hr_denoise")
-    val HR_CFG_XL = doublePreferencesKey("bojro_xl_hr_cfg")
-    val HR_CFG_FLUX = doublePreferencesKey("bojro_flux_hr_cfg")
-    val HR_CFG_QWEN = doublePreferencesKey("bojro_qwen_hr_cfg")
-    val MODULES_XL = stringSetPreferencesKey("bojro_xl_modules")
-    val MODULES_FLUX = stringSetPreferencesKey("bojro_flux_modules")
-    val MODULES_QWEN = stringSetPreferencesKey("bojro_qwen_modules")
-    val DEF_PROMPT_XL = stringPreferencesKey("bojro_def_prompt_xl")
-    val DEF_PROMPT_FLUX = stringPreferencesKey("bojro_def_prompt_flux")
-    val DEF_PROMPT_QWEN = stringPreferencesKey("bojro_def_prompt_qwen")
-    val DEF_NEG_XL = stringPreferencesKey("bojro_def_neg_xl")
-    val DEF_NEG_FLUX = stringPreferencesKey("bojro_def_neg_flux")
-    val DEF_NEG_QWEN = stringPreferencesKey("bojro_def_neg_qwen")
-    val DEF_MODEL_XL = stringPreferencesKey("bojro_def_model_xl")
-    val DEF_MODEL_FLUX = stringPreferencesKey("bojro_def_model_flux")
-    val DEF_MODEL_QWEN = stringPreferencesKey("bojro_def_model_qwen")
-    val DEF_SAMPLER_XL = stringPreferencesKey("bojro_def_sampler_xl")
-    val DEF_SAMPLER_FLUX = stringPreferencesKey("bojro_def_sampler_flux")
-    val DEF_SAMPLER_QWEN = stringPreferencesKey("bojro_def_sampler_qwen")
-    val DEF_SCHED_XL = stringPreferencesKey("bojro_def_sched_xl")
-    val DEF_SCHED_FLUX = stringPreferencesKey("bojro_def_sched_flux")
-    val DEF_SCHED_QWEN = stringPreferencesKey("bojro_def_sched_qwen")
-    val DEF_UPSCALER_XL = stringPreferencesKey("bojro_def_upscaler_xl")
-    val DEF_UPSCALER_FLUX = stringPreferencesKey("bojro_def_upscaler_flux")
-    val DEF_UPSCALER_QWEN = stringPreferencesKey("bojro_def_upscaler_qwen")
+    val HR_ENABLE = booleanPreferencesKey("bojro_hr_enable")
+    val HR_UPSCALER = stringPreferencesKey("bojro_hr_upscaler")
+    val HR_SCALE = doublePreferencesKey("bojro_hr_scale")
+    val HR_STEPS = intPreferencesKey("bojro_hr_steps")
+    val HR_DENOISE = doublePreferencesKey("bojro_hr_denoise")
+    val HR_CFG = doublePreferencesKey("bojro_hr_cfg")
+    val MODULES = stringSetPreferencesKey("bojro_modules")
+    val DEF_PROMPT = stringPreferencesKey("bojro_def_prompt")
+    val DEF_NEG = stringPreferencesKey("bojro_def_neg")
+    val DEF_MODEL = stringPreferencesKey("bojro_def_model")
+    val DEF_SAMPLER = stringPreferencesKey("bojro_def_sampler")
+    val DEF_SCHED = stringPreferencesKey("bojro_def_sched")
+    val DEF_UPSCALER = stringPreferencesKey("bojro_def_upscaler")
 }
 
 @Singleton
@@ -105,16 +57,10 @@ class ForgeryPreferencesDataSource @Inject constructor(
             isRemote = p[PrefsKeys.IS_REMOTE] ?: false,
             baseIp = p[PrefsKeys.BASE_IP] ?: "192.168.1.100",
             portWebUi = p[PrefsKeys.PORT_WEBUI] ?: 7860,
-            portComfy = p[PrefsKeys.PORT_COMFY] ?: 8188,
-            portLlm = p[PrefsKeys.PORT_LLM] ?: 1234,
-            portWake = p[PrefsKeys.PORT_WAKE] ?: 5000,
             extForgeUrl = p[PrefsKeys.EXT_FORGE] ?: "",
-            extWakeUrl = p[PrefsKeys.EXT_WAKE] ?: "",
             isCloudflare = p[PrefsKeys.IS_CLOUDFLARE] ?: false,
             cfClientId = p[PrefsKeys.CF_ID] ?: "",
             cfClientSecret = p[PrefsKeys.CF_SECRET] ?: "",
-            llmKey = p[PrefsKeys.LLM_KEY] ?: "",
-            llmModel = p[PrefsKeys.LLM_MODEL] ?: "",
             isConfigured = p[PrefsKeys.IS_CONFIGURED] ?: false,
         )
     }
@@ -124,16 +70,10 @@ class ForgeryPreferencesDataSource @Inject constructor(
             e[PrefsKeys.IS_REMOTE] = config.isRemote
             e[PrefsKeys.BASE_IP] = config.baseIp
             e[PrefsKeys.PORT_WEBUI] = config.portWebUi
-            e[PrefsKeys.PORT_COMFY] = config.portComfy
-            e[PrefsKeys.PORT_LLM] = config.portLlm
-            e[PrefsKeys.PORT_WAKE] = config.portWake
             e[PrefsKeys.EXT_FORGE] = config.extForgeUrl
-            e[PrefsKeys.EXT_WAKE] = config.extWakeUrl
             e[PrefsKeys.IS_CLOUDFLARE] = config.isCloudflare
             e[PrefsKeys.CF_ID] = config.cfClientId
             e[PrefsKeys.CF_SECRET] = config.cfClientSecret
-            e[PrefsKeys.LLM_KEY] = config.llmKey
-            e[PrefsKeys.LLM_MODEL] = config.llmModel
             e[PrefsKeys.IS_CONFIGURED] = true
         }
     }
@@ -141,20 +81,12 @@ class ForgeryPreferencesDataSource @Inject constructor(
     val uiPrefs: Flow<UiPrefs> = dataStore.data.map { p ->
         UiPrefs(
             darkTheme = p[PrefsKeys.THEME_DARK] ?: true,
-            showXl = p[PrefsKeys.SHOW_XL] ?: true,
-            showFlux = p[PrefsKeys.SHOW_FLUX] ?: true,
-            showQwen = p[PrefsKeys.SHOW_QWEN] ?: true,
-            showComfy = p[PrefsKeys.SHOW_COMFY] ?: false,
         )
     }
 
     suspend fun saveUiPrefs(prefs: UiPrefs) {
         dataStore.edit { e ->
             e[PrefsKeys.THEME_DARK] = prefs.darkTheme
-            e[PrefsKeys.SHOW_XL] = prefs.showXl
-            e[PrefsKeys.SHOW_FLUX] = prefs.showFlux
-            e[PrefsKeys.SHOW_QWEN] = prefs.showQwen
-            e[PrefsKeys.SHOW_COMFY] = prefs.showComfy
         }
     }
 
@@ -163,11 +95,7 @@ class ForgeryPreferencesDataSource @Inject constructor(
             e[PrefsKeys.IS_REMOTE] = false
             e[PrefsKeys.BASE_IP] = "192.168.1.100"
             e[PrefsKeys.PORT_WEBUI] = 7860
-            e[PrefsKeys.PORT_COMFY] = 8188
-            e[PrefsKeys.PORT_LLM] = 1234
-            e[PrefsKeys.PORT_WAKE] = 5000
             e[PrefsKeys.EXT_FORGE] = ""
-            e[PrefsKeys.EXT_WAKE] = ""
             e[PrefsKeys.IS_CLOUDFLARE] = false
             e[PrefsKeys.CF_ID] = ""
             e[PrefsKeys.CF_SECRET] = ""
@@ -175,169 +103,76 @@ class ForgeryPreferencesDataSource @Inject constructor(
         }
     }
 
-    // -- prompt drafts (shared GEN/INP <-> LoRA/Styles/MagicPrompt) --
+    // -- prompt draft (shared GEN/INP <-> LoRA/Styles) --
 
-    private fun promptKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.PROMPT_XL
-        GenerationMode.FLUX -> PrefsKeys.PROMPT_FLUX
-        GenerationMode.QWEN -> PrefsKeys.PROMPT_QWEN
-    }
-
-    private fun negKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.NEG_XL
-        GenerationMode.FLUX -> PrefsKeys.NEG_FLUX
-        GenerationMode.QWEN -> PrefsKeys.NEG_QWEN
-    }
-
-    fun observePromptDraft(mode: GenerationMode): Flow<PromptDraft> =
+    fun observePromptDraft(): Flow<PromptDraft> =
         dataStore.data.map { p ->
             PromptDraft(
-                prompt = p[promptKey(mode)].orEmpty(),
-                negativePrompt = p[negKey(mode)].orEmpty(),
+                prompt = p[PrefsKeys.PROMPT].orEmpty(),
+                negativePrompt = p[PrefsKeys.NEG].orEmpty(),
             )
         }
 
-    suspend fun savePromptDraft(mode: GenerationMode, draft: PromptDraft) {
+    suspend fun savePromptDraft(draft: PromptDraft) {
         dataStore.edit { e ->
-            e[promptKey(mode)] = draft.prompt
-            e[negKey(mode)] = draft.negativePrompt
+            e[PrefsKeys.PROMPT] = draft.prompt
+            e[PrefsKeys.NEG] = draft.negativePrompt
         }
-    }
-
-    fun observeActiveMode(): Flow<GenerationMode> = dataStore.data.map { p ->
-        runCatching { GenerationMode.valueOf(p[PrefsKeys.ACTIVE_MODE] ?: "SDXL") }
-            .getOrDefault(GenerationMode.SDXL)
-    }
-
-    suspend fun saveActiveMode(mode: GenerationMode) {
-        dataStore.edit { e -> e[PrefsKeys.ACTIVE_MODE] = mode.name }
     }
 
     fun observeLoraFavorites(): Flow<Set<String>> =
         dataStore.data.map { p -> p[PrefsKeys.LORA_FAVS] ?: emptySet() }
 
-    // -- Hi-Res Fix per mode (legacy bojro_{mode}_hr_* keys) --
+    // -- Hi-Res Fix (legacy bojro_hr_* keys) --
 
-    private fun hrEnableKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_ENABLE_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_ENABLE_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_ENABLE_QWEN
-    }
-
-    private fun hrUpscalerKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_UPSCALER_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_UPSCALER_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_UPSCALER_QWEN
-    }
-
-    private fun hrScaleKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_SCALE_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_SCALE_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_SCALE_QWEN
-    }
-
-    private fun hrStepsKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_STEPS_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_STEPS_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_STEPS_QWEN
-    }
-
-    private fun hrDenoiseKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_DENOISE_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_DENOISE_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_DENOISE_QWEN
-    }
-
-    private fun hrCfgKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.HR_CFG_XL
-        GenerationMode.FLUX -> PrefsKeys.HR_CFG_FLUX
-        GenerationMode.QWEN -> PrefsKeys.HR_CFG_QWEN
-    }
-
-    fun observeHr(mode: GenerationMode): Flow<HrSettings> = dataStore.data.map { p ->
+    fun observeHr(): Flow<HrSettings> = dataStore.data.map { p ->
         val d = HrSettings()
         HrSettings(
-            enable = p[hrEnableKey(mode)] ?: d.enable,
-            upscaler = p[hrUpscalerKey(mode)] ?: d.upscaler,
-            scale = p[hrScaleKey(mode)] ?: d.scale,
-            steps = p[hrStepsKey(mode)] ?: d.steps,
-            denoise = p[hrDenoiseKey(mode)] ?: d.denoise,
-            cfg = p[hrCfgKey(mode)] ?: d.cfg,
+            enable = p[PrefsKeys.HR_ENABLE] ?: d.enable,
+            upscaler = p[PrefsKeys.HR_UPSCALER] ?: d.upscaler,
+            scale = p[PrefsKeys.HR_SCALE] ?: d.scale,
+            steps = p[PrefsKeys.HR_STEPS] ?: d.steps,
+            denoise = p[PrefsKeys.HR_DENOISE] ?: d.denoise,
+            cfg = p[PrefsKeys.HR_CFG] ?: d.cfg,
         )
     }
 
-    suspend fun saveHr(mode: GenerationMode, hr: HrSettings) {
+    suspend fun saveHr(hr: HrSettings) {
         dataStore.edit { e ->
-            e[hrEnableKey(mode)] = hr.enable
-            e[hrUpscalerKey(mode)] = hr.upscaler
-            e[hrScaleKey(mode)] = hr.scale
-            e[hrStepsKey(mode)] = hr.steps
-            e[hrDenoiseKey(mode)] = hr.denoise
-            e[hrCfgKey(mode)] = hr.cfg
+            e[PrefsKeys.HR_ENABLE] = hr.enable
+            e[PrefsKeys.HR_UPSCALER] = hr.upscaler
+            e[PrefsKeys.HR_SCALE] = hr.scale
+            e[PrefsKeys.HR_STEPS] = hr.steps
+            e[PrefsKeys.HR_DENOISE] = hr.denoise
+            e[PrefsKeys.HR_CFG] = hr.cfg
         }
     }
 
-    // -- GEN defaults per mode (saved user values applied on start/mode switch) --
+    // -- GEN defaults (saved user values applied on start) --
 
-    private fun defaultsPromptKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_PROMPT_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_PROMPT_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_PROMPT_QWEN
+    private fun defaultsKey(field: DefaultField) = when (field) {
+        DefaultField.PROMPT -> PrefsKeys.DEF_PROMPT
+        DefaultField.NEGATIVE -> PrefsKeys.DEF_NEG
+        DefaultField.MODEL -> PrefsKeys.DEF_MODEL
+        DefaultField.SAMPLER -> PrefsKeys.DEF_SAMPLER
+        DefaultField.SCHEDULER -> PrefsKeys.DEF_SCHED
+        DefaultField.UPSCALER -> PrefsKeys.DEF_UPSCALER
     }
 
-    private fun defaultsNegKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_NEG_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_NEG_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_NEG_QWEN
-    }
-
-    private fun defaultsModelKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_MODEL_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_MODEL_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_MODEL_QWEN
-    }
-
-    private fun defaultsSamplerKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_SAMPLER_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_SAMPLER_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_SAMPLER_QWEN
-    }
-
-    private fun defaultsSchedKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_SCHED_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_SCHED_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_SCHED_QWEN
-    }
-
-    private fun defaultsUpscalerKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.DEF_UPSCALER_XL
-        GenerationMode.FLUX -> PrefsKeys.DEF_UPSCALER_FLUX
-        GenerationMode.QWEN -> PrefsKeys.DEF_UPSCALER_QWEN
-    }
-
-    private fun defaultsKey(mode: GenerationMode, field: DefaultField) = when (field) {
-        DefaultField.PROMPT -> defaultsPromptKey(mode)
-        DefaultField.NEGATIVE -> defaultsNegKey(mode)
-        DefaultField.MODEL -> defaultsModelKey(mode)
-        DefaultField.SAMPLER -> defaultsSamplerKey(mode)
-        DefaultField.SCHEDULER -> defaultsSchedKey(mode)
-        DefaultField.UPSCALER -> defaultsUpscalerKey(mode)
-    }
-
-    fun observeDefaults(mode: GenerationMode): Flow<GenDefaults> = dataStore.data.map { p ->
+    fun observeDefaults(): Flow<GenDefaults> = dataStore.data.map { p ->
         GenDefaults(
-            prompt = p[defaultsPromptKey(mode)].orEmpty(),
-            negativePrompt = p[defaultsNegKey(mode)].orEmpty(),
-            modelTitle = p[defaultsModelKey(mode)].orEmpty(),
-            sampler = p[defaultsSamplerKey(mode)].orEmpty(),
-            scheduler = p[defaultsSchedKey(mode)].orEmpty(),
-            upscaler = p[defaultsUpscalerKey(mode)].orEmpty(),
+            prompt = p[PrefsKeys.DEF_PROMPT].orEmpty(),
+            negativePrompt = p[PrefsKeys.DEF_NEG].orEmpty(),
+            modelTitle = p[PrefsKeys.DEF_MODEL].orEmpty(),
+            sampler = p[PrefsKeys.DEF_SAMPLER].orEmpty(),
+            scheduler = p[PrefsKeys.DEF_SCHED].orEmpty(),
+            upscaler = p[PrefsKeys.DEF_UPSCALER].orEmpty(),
         )
     }
 
-    suspend fun saveDefault(mode: GenerationMode, field: DefaultField, value: String) {
+    suspend fun saveDefault(field: DefaultField, value: String) {
         dataStore.edit { e ->
-            e[defaultsKey(mode, field)] = value
+            e[defaultsKey(field)] = value
         }
     }
 
@@ -348,19 +183,13 @@ class ForgeryPreferencesDataSource @Inject constructor(
         }
     }
 
-    // -- VAE / Text Encoder selection per mode (Forge Neo forge_additional_modules) --
-
-    private fun modulesKey(mode: GenerationMode) = when (mode) {
-        GenerationMode.SDXL -> PrefsKeys.MODULES_XL
-        GenerationMode.FLUX -> PrefsKeys.MODULES_FLUX
-        GenerationMode.QWEN -> PrefsKeys.MODULES_QWEN
-    }
+    // -- VAE / Text Encoder selection (Forge Neo forge_additional_modules) --
 
     /** Sorted for UI/selection stability (DataStore sets are unordered). */
-    fun observeModules(mode: GenerationMode): Flow<List<String>> =
-        dataStore.data.map { p -> (p[modulesKey(mode)] ?: emptySet()).sorted() }
+    fun observeModules(): Flow<List<String>> =
+        dataStore.data.map { p -> (p[PrefsKeys.MODULES] ?: emptySet()).sorted() }
 
-    suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
-        dataStore.edit { e -> e[modulesKey(mode)] = modules.toSet() }
+    suspend fun saveModules(modules: List<String>) {
+        dataStore.edit { e -> e[PrefsKeys.MODULES] = modules.toSet() }
     }
 }

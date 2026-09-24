@@ -2,9 +2,6 @@ package com.forgery.app.core.model
 
 import kotlinx.serialization.Serializable
 
-/** Generation mode: mirrors legacy currentMode (xl/flux/qwen) + inpaint task. */
-enum class GenerationMode { SDXL, FLUX, QWEN }
-
 enum class GenerationTask { TXT2IMG, IMG2IMG }
 
 /** Connection mode: legacy LOCAL (LAN IP+ports) vs EXTERNAL (HTTPS/Ngrok). */
@@ -12,39 +9,22 @@ data class ConnectionConfig(
     val isRemote: Boolean = false,
     val baseIp: String = "192.168.1.100",
     val portWebUi: Int = 7860,
-    val portComfy: Int = 8188,
-    val portLlm: Int = 1234,
-    val portWake: Int = 5000,
     val extForgeUrl: String = "",
-    val extWakeUrl: String = "",
     val isCloudflare: Boolean = false,
     val cfClientId: String = "",
     val cfClientSecret: String = "",
-    val llmKey: String = "",
-    val llmModel: String = "",
     val isConfigured: Boolean = false,
 ) {
     fun webUiBaseUrl(): String =
         if (isRemote && extForgeUrl.isNotBlank()) extForgeUrl.trimEnd('/')
         else "http://$baseIp:$portWebUi"
-
-    fun comfyHost(): String =
-        if (isRemote) "" else "$baseIp:$portComfy"
-
-    fun llmBaseUrl(): String = "http://$baseIp:$portLlm"
-
-    fun wakeBaseUrl(): String =
-        if (isRemote && extWakeUrl.isNotBlank()) extWakeUrl.trimEnd('/')
-        else "http://$baseIp:$portWake"
 }
 
 data class GenerationParams(
-    val mode: GenerationMode = GenerationMode.SDXL,
     val prompt: String = "",
     val negativePrompt: String = "",
     val steps: Int = 20,
     val cfgScale: Double = 7.0,
-    val distilledCfgScale: Double = 3.5,
     val width: Int = 1024,
     val height: Int = 1024,
     val sampler: String = "Euler",
@@ -53,7 +33,7 @@ data class GenerationParams(
     val batchSize: Int = 1,
     val batchCount: Int = 1,
     val modelTitle: String = "",
-    /** Selected VAE / Text Encoder modules (Forge Neo `forge_additional_modules`, SDXL only). */
+    /** Selected VAE / Text Encoder modules (Forge Neo `forge_additional_modules`). */
     val additionalModules: List<String> = emptyList(),
     val enableHr: Boolean = false,
     val hrUpscaler: String = "Latent",
@@ -93,7 +73,7 @@ data class QueueResult(
     val error: String? = null,
 )
 
-/** Per-mode prompt draft shared between GEN/INP and LoRA/Styles/MagicPrompt. */
+/** Prompt draft shared between GEN/INP and LoRA/Styles. */
 data class PromptDraft(
     val prompt: String = "",
     val negativePrompt: String = "",
@@ -152,13 +132,9 @@ data class StylePreset(
     val negativePrompt: String,
 )
 
-/** UI preferences: mirrors legacy bojro_theme / bojro_show_* / bojro_vis_* flags. */
+/** UI preferences: mirrors legacy bojro_theme flag. */
 data class UiPrefs(
     val darkTheme: Boolean = true,
-    val showXl: Boolean = true,
-    val showFlux: Boolean = true,
-    val showQwen: Boolean = true,
-    val showComfy: Boolean = false,
 )
 
 /** One-shot handoff of restored generation params from Analyze to Generate. */
@@ -167,7 +143,6 @@ data class RestoredParams(
     val sampler: String? = null,
     val scheduler: String? = null,
     val cfgScale: Double? = null,
-    val distilledCfgScale: Double? = null,
     val seed: Long? = null,
     val width: Int? = null,
     val height: Int? = null,

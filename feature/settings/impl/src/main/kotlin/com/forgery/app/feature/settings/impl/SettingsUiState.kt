@@ -11,11 +11,7 @@ import com.forgery.app.core.model.UiPrefs
 data class SettingsTextDrafts(
     val baseIp: TextFieldValue = TextFieldValue(""),
     val portWebUi: TextFieldValue = TextFieldValue(""),
-    val portComfy: TextFieldValue = TextFieldValue(""),
-    val portLlm: TextFieldValue = TextFieldValue(""),
-    val portWake: TextFieldValue = TextFieldValue(""),
     val extForgeUrl: TextFieldValue = TextFieldValue(""),
-    val extWakeUrl: TextFieldValue = TextFieldValue(""),
     val cfClientId: TextFieldValue = TextFieldValue(""),
     val cfClientSecret: TextFieldValue = TextFieldValue(""),
 ) {
@@ -24,11 +20,7 @@ data class SettingsTextDrafts(
         fun from(config: ConnectionConfig) = SettingsTextDrafts(
             baseIp = TextFieldValue(config.baseIp),
             portWebUi = TextFieldValue(config.portWebUi.toString()),
-            portComfy = TextFieldValue(config.portComfy.toString()),
-            portLlm = TextFieldValue(config.portLlm.toString()),
-            portWake = TextFieldValue(config.portWake.toString()),
             extForgeUrl = TextFieldValue(config.extForgeUrl),
-            extWakeUrl = TextFieldValue(config.extWakeUrl),
             cfClientId = TextFieldValue(config.cfClientId),
             cfClientSecret = TextFieldValue(config.cfClientSecret),
         )

@@ -14,7 +14,6 @@ import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenDefaults
 import com.forgery.app.core.model.ConnectionConfig
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.QueueJob
@@ -129,74 +128,57 @@ private class FakeQueueRepository : QueueRepository {
 }
 
 private class FakePromptDraftRepository : PromptDraftRepository {
-    private val active = MutableStateFlow(GenerationMode.SDXL)
-    private val drafts = mutableMapOf<GenerationMode, MutableStateFlow<PromptDraft>>()
+    private val draft = MutableStateFlow(PromptDraft())
 
-    private fun flowOf(mode: GenerationMode) =
-        drafts.getOrPut(mode) { MutableStateFlow(PromptDraft()) }
-
-    override fun observeDraft(mode: GenerationMode): Flow<PromptDraft> = flowOf(mode).asStateFlow()
-    override fun observeActiveMode(): Flow<GenerationMode> = active.asStateFlow()
-    override suspend fun setPrompt(mode: GenerationMode, prompt: String, negativePrompt: String) {
-        flowOf(mode).value = PromptDraft(prompt, negativePrompt)
+    override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
+    override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        draft.value = PromptDraft(prompt, negativePrompt)
     }
-    override suspend fun appendPrompt(mode: GenerationMode, text: String, negativeText: String) {
-        val cur = flowOf(mode).value
-        flowOf(mode).value = PromptDraft(
+    override suspend fun appendPrompt(text: String, negativeText: String) {
+        val cur = draft.value
+        draft.value = PromptDraft(
             (cur.prompt + " " + text).trim(),
             (cur.negativePrompt + " " + negativeText).trim(),
         )
     }
-    override suspend fun setActiveMode(mode: GenerationMode) {
-        active.value = mode
-    }
 }
 
 private class FakeHrSettingsRepository : HrSettingsRepository {
-    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<HrSettings>>()
+    private val stored = MutableStateFlow(HrSettings())
 
-    private fun flowOf(mode: GenerationMode) =
-        stored.getOrPut(mode) { MutableStateFlow(HrSettings()) }
+    override fun observeHr(): Flow<HrSettings> = stored.asStateFlow()
 
-    override fun observeHr(mode: GenerationMode): Flow<HrSettings> = flowOf(mode).asStateFlow()
-
-    override suspend fun saveHr(mode: GenerationMode, hr: HrSettings) {
-        flowOf(mode).value = hr
+    override suspend fun saveHr(hr: HrSettings) {
+        stored.value = hr
     }
 
-    fun current(mode: GenerationMode) = flowOf(mode).value
+    fun current() = stored.value
 }
 
 /** In-memory modules-selection fake: real repo doubles as fake (persisted semantics). */
 private class FakeModulesSelectionRepository : ModulesSelectionRepository {
-    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
+    private val stored = MutableStateFlow<List<String>>(emptyList())
 
-    private fun flowOf(mode: GenerationMode) =
-        stored.getOrPut(mode) { MutableStateFlow(emptyList()) }
+    override fun observeModules(): Flow<List<String>> =
+        stored.asStateFlow()
 
-    override fun observeModules(mode: GenerationMode): Flow<List<String>> =
-        flowOf(mode).asStateFlow()
-
-    override suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
-        flowOf(mode).value = modules
+    override suspend fun saveModules(modules: List<String>) {
+        stored.value = modules
     }
 
-    fun current(mode: GenerationMode) = flowOf(mode).value
+    fun current() = stored.value
 }
 
 /** In-memory defaults fake: real repo doubles as fake (persisted semantics). */
 private class FakeDefaultsRepository : DefaultsRepository {
-    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<GenDefaults>>()
+    private val stored = MutableStateFlow(GenDefaults())
 
-    private fun flowOf(mode: GenerationMode) =
-        stored.getOrPut(mode) { MutableStateFlow(GenDefaults()) }
+    override fun observeDefaults(): Flow<GenDefaults> =
+        stored.asStateFlow()
 
-    override fun observeDefaults(mode: GenerationMode): Flow<GenDefaults> =
-        flowOf(mode).asStateFlow()
-
-    override suspend fun saveDefault(mode: GenerationMode, field: DefaultField, value: String) {
-        val cur = flowOf(mode).value
-        flowOf(mode).value = when (field) {
+    override suspend fun saveDefault(field: DefaultField, value: String) {
+        val cur = stored.value
+        stored.value = when (field) {
             DefaultField.PROMPT -> cur.copy(prompt = value)
             DefaultField.NEGATIVE -> cur.copy(negativePrompt = value)
             DefaultField.MODEL -> cur.copy(modelTitle = value)
@@ -206,9 +188,9 @@ private class FakeDefaultsRepository : DefaultsRepository {
         }
     }
 
-    fun current(mode: GenerationMode) = flowOf(mode).value
-    fun seed(mode: GenerationMode, defaults: GenDefaults) {
-        flowOf(mode).value = defaults
+    fun current() = stored.value
+    fun seed(defaults: GenDefaults) {
+        stored.value = defaults
     }
 }
 
@@ -345,29 +327,6 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `mode switch keeps per-mode module selection`() = runTest {
-        val selection = FakeModulesSelectionRepository()
-        val vm = viewModel(selection = selection)
-        vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors")))
-        vm.uiState.first {
-            it is GenerateUiState.Success && it.params.additionalModules.isNotEmpty()
-        }
-        assertEquals(listOf("ae.safetensors"), selection.current(GenerationMode.SDXL))
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
-        val flux = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
-        } as GenerateUiState.Success
-        assertTrue(flux.params.additionalModules.isEmpty())
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
-        val back = vm.uiState.first {
-            it is GenerateUiState.Success &&
-                it.params.mode == GenerationMode.SDXL && it.params.additionalModules.isNotEmpty()
-        } as GenerateUiState.Success
-        assertEquals(listOf("ae.safetensors"), back.params.additionalModules)
-    }
-
-    @Test
     fun `handoff overlays additional modules`() = runTest {
         val handoff = FakeAnalyzeHandoff()
         handoff.set(RestoredParams(additionalModules = listOf("ae.safetensors")))
@@ -376,29 +335,6 @@ class GenerateViewModelTest {
             it is GenerateUiState.Success
         } as GenerateUiState.Success
         assertEquals(listOf("ae.safetensors"), state.params.additionalModules)
-    }
-
-    @Test
-    fun `mode switch applies presets and keeps per-mode drafts`() = runTest {
-        val vm = viewModel()
-        vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("cat")))
-        vm.uiState.first {
-            it is GenerateUiState.Success && it.params.prompt == "cat"
-        }
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.QWEN))
-        val qwen = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.mode == GenerationMode.QWEN
-        } as GenerateUiState.Success
-        assertEquals("", qwen.params.prompt)
-        assertEquals(8, qwen.params.steps)
-        assertEquals(1.0, qwen.params.cfgScale, 1e-9)
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
-        val sdxl = vm.uiState.first {
-            it is GenerateUiState.Success &&
-                it.params.mode == GenerationMode.SDXL && it.params.prompt == "cat"
-        } as GenerateUiState.Success
-        assertEquals("cat", sdxl.params.prompt)
     }
 
     @Test
@@ -531,7 +467,7 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `hr toggle persists per mode`() = runTest {
+    fun `hr toggle persists`() = runTest {
         val vm = viewModel()
         vm.uiState.first { it is GenerateUiState.Success }
         vm.onAction(GenerateAction.HrToggled)
@@ -539,18 +475,7 @@ class GenerateViewModelTest {
             it is GenerateUiState.Success && it.hr.enable
         } as GenerateUiState.Success
         assertEquals(true, enabled.hr.enable)
-        assertEquals(true, hrRepo.current(GenerationMode.SDXL).enable)
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
-        val flux = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
-        } as GenerateUiState.Success
-        assertEquals(false, flux.hr.enable)
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
-        val back = vm.uiState.first {
-            it is GenerateUiState.Success &&
-                it.params.mode == GenerationMode.SDXL && it.hr.enable
-        } as GenerateUiState.Success
-        assertEquals(true, back.hr.enable)
+        assertEquals(true, hrRepo.current().enable)
     }
 
     @Test
@@ -645,15 +570,16 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `distilled action updates params on commit`() = runTest {
-        val vm = viewModel()
+    fun `handoff set after init is applied on warm reuse`() = runTest {
+        val handoff = FakeAnalyzeHandoff()
+        val vm = viewModel(handoff = handoff)
         vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.DistilledChanged(TextFieldValue("5.0")))
-        vm.onAction(GenerateAction.CommitInputs)
+        handoff.set(RestoredParams(steps = 30, seed = 123L))
         val state = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.distilledCfgScale == 5.0
+            it is GenerateUiState.Success && it.params.steps == 30 && it.params.seed == 123L
         } as GenerateUiState.Success
-        assertEquals(5.0, state.params.distilledCfgScale, 1e-9)
+        assertEquals(30, state.params.steps)
+        assertEquals(123L, state.params.seed)
     }
 
     @Test
@@ -725,7 +651,6 @@ class GenerateViewModelTest {
     fun `init applies saved model sampler scheduler defaults`() = runTest {
         val defaults = FakeDefaultsRepository()
         defaults.seed(
-            GenerationMode.SDXL,
             GenDefaults(modelTitle = "m.safetensors", sampler = "DPM++ 2M", scheduler = "Beta"),
         )
         val vm = viewModel(defaults = defaults)
@@ -738,10 +663,9 @@ class GenerateViewModelTest {
     @Test
     fun `init fills blank draft from default prompt`() = runTest {
         val d = FakePromptDraftRepository()
-        d.setPrompt(GenerationMode.SDXL, "", "")
+        d.setPrompt("", "")
         val defaults = FakeDefaultsRepository()
         defaults.seed(
-            GenerationMode.SDXL,
             GenDefaults(prompt = "def pos", negativePrompt = "def neg"),
         )
         val vm = viewModel(drafts = d, defaults = defaults)
@@ -753,10 +677,9 @@ class GenerateViewModelTest {
     @Test
     fun `init preserves typed draft over default prompt`() = runTest {
         val d = FakePromptDraftRepository()
-        d.setPrompt(GenerationMode.SDXL, "typed", "n")
+        d.setPrompt("typed", "n")
         val defaults = FakeDefaultsRepository()
         defaults.seed(
-            GenerationMode.SDXL,
             GenDefaults(prompt = "def pos", negativePrompt = "def neg"),
         )
         val vm = viewModel(drafts = d, defaults = defaults)
@@ -769,13 +692,13 @@ class GenerateViewModelTest {
     fun `upscaler default applies while hr untouched, explicit pick wins`() = runTest {
         val hr = FakeHrSettingsRepository()
         val defaults = FakeDefaultsRepository()
-        defaults.seed(GenerationMode.SDXL, GenDefaults(upscaler = "ESRGAN"))
+        defaults.seed(GenDefaults(upscaler = "ESRGAN"))
         var vm = viewModel(hr = hr, defaults = defaults)
         var state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
         assertEquals("ESRGAN", state.hr.upscaler)
 
         val hr2 = FakeHrSettingsRepository()
-        hr2.saveHr(GenerationMode.SDXL, HrSettings(upscaler = "SwinIR"))
+        hr2.saveHr(HrSettings(upscaler = "SwinIR"))
         vm = viewModel(hr = hr2, defaults = defaults)
         state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
         assertEquals("SwinIR", state.hr.upscaler)
@@ -784,7 +707,7 @@ class GenerateViewModelTest {
     @Test
     fun `clear prompt keeps negative`() = runTest {
         val d = FakePromptDraftRepository()
-        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        d.setPrompt("pos", "neg")
         val vm = viewModel(drafts = d)
         vm.uiState.first { it is GenerateUiState.Success }
         vm.onAction(GenerateAction.ClearPrompt)
@@ -798,7 +721,7 @@ class GenerateViewModelTest {
     @Test
     fun `clear negative keeps prompt`() = runTest {
         val d = FakePromptDraftRepository()
-        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        d.setPrompt("pos", "neg")
         val vm = viewModel(drafts = d)
         vm.uiState.first { it is GenerateUiState.Success }
         vm.onAction(GenerateAction.ClearNegative)
@@ -812,7 +735,7 @@ class GenerateViewModelTest {
     @Test
     fun `save default persists current values`() = runTest {
         val d = FakePromptDraftRepository()
-        d.setPrompt(GenerationMode.SDXL, "pos", "neg")
+        d.setPrompt("pos", "neg")
         val defaults = FakeDefaultsRepository()
         val vm = viewModel(drafts = d, defaults = defaults)
         vm.uiState.first { it is GenerateUiState.Success }
@@ -824,30 +747,13 @@ class GenerateViewModelTest {
         vm.onAction(GenerateAction.SaveDefault(DefaultField.SAMPLER))
         vm.onAction(GenerateAction.SaveDefault(DefaultField.SCHEDULER))
         vm.onAction(GenerateAction.SaveDefault(DefaultField.UPSCALER))
-        val saved = defaults.current(GenerationMode.SDXL)
+        val saved = defaults.current()
         assertEquals("pos", saved.prompt)
         assertEquals("neg", saved.negativePrompt)
         assertEquals("m.safetensors", saved.modelTitle)
         assertEquals("DPM++ 2M", saved.sampler)
         assertEquals("Karras", saved.scheduler)
         assertEquals("Latent", saved.upscaler)
-    }
-
-    @Test
-    fun `mode switch loads new mode defaults`() = runTest {
-        val defaults = FakeDefaultsRepository()
-        defaults.seed(
-            GenerationMode.FLUX,
-            GenDefaults(modelTitle = "flux.safetensors", scheduler = "Simple"),
-        )
-        val vm = viewModel(defaults = defaults)
-        vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
-        val state = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
-        } as GenerateUiState.Success
-        assertEquals("flux.safetensors", state.params.modelTitle)
-        assertEquals("Simple", state.params.scheduler)
     }
 
     @Test
@@ -918,42 +824,12 @@ class GenerateViewModelTest {
             it is GenerateUiState.Success && it.inputs.prompt.text == "a cat"
         }
         // LoRA browser appends directly to the repo, bypassing the VM.
-        ext.appendPrompt(GenerationMode.SDXL, "<lora:x>", "")
+        ext.appendPrompt("<lora:x>", "")
         val state = vm.uiState.first {
             it is GenerateUiState.Success && it.inputs.prompt.text == "a cat <lora:x>"
         } as GenerateUiState.Success
         assertEquals("a cat <lora:x>", state.inputs.prompt.text)
         assertEquals(TextRange(2), state.inputs.prompt.selection)
         assertEquals("a cat <lora:x>", state.params.prompt)
-    }
-
-    @Test
-    fun `mode switch commits before reset`() = runTest {
-        val vm = viewModel()
-        vm.uiState.first { it is GenerateUiState.Success }
-        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("cat")))
-        vm.onAction(GenerateAction.HrScaleChanged(TextFieldValue("2.0")))
-        vm.uiState.first {
-            it is GenerateUiState.Success && it.inputs.prompt.text == "cat"
-        }
-        // Uncommitted HR raw must be flushed to the SDXL repo before the reset.
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.FLUX))
-        val flux = vm.uiState.first {
-            it is GenerateUiState.Success && it.params.mode == GenerationMode.FLUX
-        } as GenerateUiState.Success
-        assertEquals(20, flux.params.steps)
-        assertEquals(3.5, flux.params.cfgScale, 1e-9)
-        assertEquals("", flux.inputs.prompt.text)
-        vm.onAction(GenerateAction.ModeChanged(GenerationMode.SDXL))
-        val back = vm.uiState.first {
-            it is GenerateUiState.Success &&
-                it.params.mode == GenerationMode.SDXL && it.inputs.prompt.text == "cat"
-        } as GenerateUiState.Success
-        assertEquals("cat", back.inputs.prompt.text)
-        val hrBack = vm.uiState.first {
-            it is GenerateUiState.Success && it.hr.scale == 2.0
-        } as GenerateUiState.Success
-        assertEquals(2.0, hrBack.hr.scale, 1e-9)
-        assertEquals("2.0", hrBack.inputs.hrScale.text)
     }
 }

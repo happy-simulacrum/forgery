@@ -16,7 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.forgery.app.core.model.GenerationMode
 
 /**
  * Aspect-ratio preset: button label plus the exact pixels it applies.
@@ -27,44 +26,26 @@ import com.forgery.app.core.model.GenerationMode
 data class AspectRatioPreset(val label: String, val width: Int, val height: Int)
 
 /**
- * Preset grids per [GenerationMode]: first = 1MP row, second = 2MP row.
+ * Preset grids: first = 1MP row, second = 2MP row.
  *
- * SDXL and QWEN share one set (resolver `xl_*` / `qwen_*` resGrid);
- * FLUX has its own (resolver `flux_*` resGrid).
+ * Values mirror resolver-sd `setRes` calls (www/index.html).
  */
-fun aspectPresetsFor(mode: GenerationMode): Pair<List<AspectRatioPreset>, List<AspectRatioPreset>> =
-    when (mode) {
-        GenerationMode.SDXL, GenerationMode.QWEN -> Pair(
-            listOf(
-                AspectRatioPreset("1:1", 1024, 1024),
-                AspectRatioPreset("3:2", 1254, 836),
-                AspectRatioPreset("4:3", 1182, 887),
-                AspectRatioPreset("16:9", 1365, 768),
-                AspectRatioPreset("21:9", 1564, 670),
-            ),
-            listOf(
-                AspectRatioPreset("1:1", 1448, 1448),
-                AspectRatioPreset("3:2", 1773, 1182),
-                AspectRatioPreset("4:3", 1672, 1254),
-                AspectRatioPreset("16:9", 1936, 1089),
-            ),
-        )
-        GenerationMode.FLUX -> Pair(
-            listOf(
-                AspectRatioPreset("1:1", 1024, 1024),
-                AspectRatioPreset("3:4", 896, 1152),
-                AspectRatioPreset("4:3", 1152, 896),
-                AspectRatioPreset("9:16", 832, 1216),
-                AspectRatioPreset("16:9", 1216, 832),
-            ),
-            listOf(
-                AspectRatioPreset("1:1", 1440, 1440),
-                AspectRatioPreset("9:16", 1088, 1920),
-                AspectRatioPreset("16:9", 1920, 1088),
-                AspectRatioPreset("4:5", 1280, 1536),
-            ),
-        )
-    }
+fun aspectPresets(): Pair<List<AspectRatioPreset>, List<AspectRatioPreset>> =
+    Pair(
+        listOf(
+            AspectRatioPreset("1:1", 1024, 1024),
+            AspectRatioPreset("3:2", 1254, 836),
+            AspectRatioPreset("4:3", 1182, 887),
+            AspectRatioPreset("16:9", 1365, 768),
+            AspectRatioPreset("21:9", 1564, 670),
+        ),
+        listOf(
+            AspectRatioPreset("1:1", 1448, 1448),
+            AspectRatioPreset("3:2", 1773, 1182),
+            AspectRatioPreset("4:3", 1672, 1254),
+            AspectRatioPreset("16:9", 1936, 1089),
+        ),
+    )
 
 /**
  * Aspect-ratio selector mirroring resolver `#resGrid` / `.res-switch` / `.mp-label`.
@@ -75,14 +56,13 @@ fun aspectPresetsFor(mode: GenerationMode): Pair<List<AspectRatioPreset>, List<A
  */
 @Composable
 fun AspectRatioGrid(
-    mode: GenerationMode,
     currentWidth: Int,
     currentHeight: Int,
     onSelect: (width: Int, height: Int) -> Unit,
     onFlip: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val (oneMp, twoMp) = aspectPresetsFor(mode)
+    val (oneMp, twoMp) = aspectPresets()
     Column(modifier = modifier) {
         Text("Aspect Ratio", style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.height(4.dp))

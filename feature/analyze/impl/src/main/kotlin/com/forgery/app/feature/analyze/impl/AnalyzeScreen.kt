@@ -33,7 +33,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.forgery.app.core.common.FileInfo
 import com.forgery.app.core.designsystem.ForgeryTheme
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.ui.ErrorState
 import com.forgery.app.core.ui.LoadingState
 import kotlinx.coroutines.flow.first
@@ -57,13 +56,13 @@ internal fun AnalyzeRoute(
     AnalyzeScreen(
         uiState = uiState,
         onAction = { action ->
-            if (action is AnalyzeAction.CopyToMode) {
+            if (action is AnalyzeAction.UseAgain) {
                 // Navigate only after the handoff write completes (handoff race C-4).
                 if (!copyInFlight) {
                     copyInFlight = true
                     scope.launch {
                         viewModel.onAction(action)
-                        viewModel.copyDone.first { it == action.mode }
+                        viewModel.copyDone.first()
                         onNavigateToGenerate()
                     }
                 }
@@ -178,18 +177,11 @@ private fun AnalyzeContent(
                     }
                 }
             }
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                GenerationMode.entries.forEach { mode ->
-                    OutlinedButton(
-                        onClick = { onAction(AnalyzeAction.CopyToMode(mode)) },
-                        enabled = !copyInFlight,
-                        modifier = Modifier.weight(1f),
-                    ) { Text(mode.name) }
-                }
-            }
+            OutlinedButton(
+                onClick = { onAction(AnalyzeAction.UseAgain) },
+                enabled = !copyInFlight,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("USE AGAIN") }
         }
 
         state.statusMessage?.let {

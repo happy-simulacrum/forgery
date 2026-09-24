@@ -4,10 +4,10 @@ import androidx.navigation.NavController
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class StylesRoute(val mode: String? = null)
+data object StylesRoute
 
 const val STYLES_ROUTE = "styles"
 
-fun NavController.navigateToStyles(mode: String? = null) {
-    navigate(StylesRoute(mode))
+fun NavController.navigateToStyles() {
+    navigate(StylesRoute)
 }

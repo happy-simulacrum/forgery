@@ -1,6 +1,5 @@
 package com.forgery.app.core.data
 
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -21,13 +20,11 @@ private val JsonLenient = kotlinx.serialization.json.Json { ignoreUnknownKeys = 
  * Produces Forge/A1111 `/txt2img` + `/img2img` payloads. Neo-crashing keys are
  * NOT stripped here — [com.forgery.app.core.network.ForgeApiFactory.sanitized]
  * applies the sanitizer right before POST.
- * Mirrors resolver engine.js: `distilled_cfg_scale` is written for FLUX only
- * (SDXL/QWEN must not carry the key). Neo `forge_additional_modules`
- * (VAE / Text Encoder) is written for SDXL always — even when empty, so the
- * per-request override masks a stale server-global selection (VAE leak used
- * to produce dark/wrong images after the user cleared the picker or switched
- * to FLUX/QWEN). `sd_model_checkpoint` is omitted when blank so we never
- * reset the server checkpoint with an empty override.
+ * Neo `forge_additional_modules` (VAE / Text Encoder) is written always —
+ * even when empty, so the per-request override masks a stale server-global
+ * selection (VAE leak used to produce dark/wrong images after the user
+ * cleared the picker). `sd_model_checkpoint` is omitted when blank so we
+ * never reset the server checkpoint with an empty override.
  */
 fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
     val payload = mutableMapOf<String, Any?>(
@@ -45,9 +42,6 @@ fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
         "save_images" to false,
         "send_images" to true,
     )
-    if (params.mode == GenerationMode.FLUX) {
-        payload["distilled_cfg_scale"] = params.distilledCfgScale
-    }
     if (params.enableHr) {
         payload["enable_hr"] = true
         payload["hr_scale"] = params.hrScale
@@ -61,9 +55,7 @@ fun buildTxt2ImgPayload(params: GenerationParams): Map<String, Any?> {
         if (params.modelTitle.isNotBlank()) {
             put("sd_model_checkpoint", params.modelTitle)
         }
-        if (params.mode == GenerationMode.SDXL) {
-            put("forge_additional_modules", params.additionalModules)
-        }
+        put("forge_additional_modules", params.additionalModules)
     }
     if (overrides.isNotEmpty()) {
         payload["override_settings"] = overrides

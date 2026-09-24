@@ -1,6 +1,5 @@
 package com.forgery.app.feature.generate.impl
 
-import com.forgery.app.core.model.GenerationMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -35,12 +34,12 @@ class SliderInputTest {
     @Test
     fun `cfg valid value passes through`() {
         assertEquals(7.0, parseCfgInput("7", 0f..15f))
-        assertEquals(7.3, parseCfgInput("7.3", 0f..15f))
+        assertEquals(7.5, parseCfgInput("7.3", 0f..15f))
     }
 
     @Test
-    fun `cfg keeps exact typed value without snapping`() {
-        assertEquals(7.3, parseCfgInput("7.3", 0f..15f)!!, 0.0)
+    fun `cfg snaps to nearest half`() {
+        assertEquals(7.5, parseCfgInput("7.3", 0f..15f)!!, 0.0)
     }
 
     @Test
@@ -57,16 +56,38 @@ class SliderInputTest {
     }
 
     @Test
-    fun `server schedulers win when available`() {
-        val server = listOf("Automatic", "Karras", "Beta")
-        assertEquals(server, schedulerOptions(server, GenerationMode.SDXL, "Karras"))
+    fun `snapCfg rounds to nearest half`() {
+        assertEquals(7.5, snapCfg(7.33), 0.0)
+        assertEquals(7.0, snapCfg(7.24), 0.0)
     }
 
     @Test
-    fun `empty server falls back to curated per-mode list`() {
+    fun `snapCfg clamps`() {
+        assertEquals(0.0, snapCfg(-5.0), 0.0)
+        assertEquals(15.0, snapCfg(99.0), 0.0)
+    }
+
+    @Test
+    fun `snapSteps rounds to nearest int`() {
+        assertEquals(21, snapSteps(20.6f))
+    }
+
+    @Test
+    fun `parseCfgInput snaps`() {
+        assertEquals(7.5, parseCfgInput("7.33", 0f..15f)!!, 0.0)
+    }
+
+    @Test
+    fun `server schedulers win when available`() {
+        val server = listOf("Automatic", "Karras", "Beta")
+        assertEquals(server, schedulerOptions(server, "Karras"))
+    }
+
+    @Test
+    fun `empty server falls back to curated list`() {
         assertEquals(
             listOf("Karras", "Normal", "Simple", "Exponential"),
-            schedulerOptions(emptyList(), GenerationMode.SDXL, "Karras"),
+            schedulerOptions(emptyList(), "Karras"),
         )
     }
 
@@ -74,7 +95,7 @@ class SliderInputTest {
     fun `current value is kept when missing from options`() {
         assertEquals(
             listOf("Karras", "Normal", "Beta"),
-            schedulerOptions(listOf("Karras", "Normal"), GenerationMode.SDXL, "Beta"),
+            schedulerOptions(listOf("Karras", "Normal"), "Beta"),
         )
     }
 
@@ -82,7 +103,7 @@ class SliderInputTest {
     fun `blank current is not appended`() {
         assertEquals(
             listOf("Karras", "Normal"),
-            schedulerOptions(listOf("Karras", "Normal"), GenerationMode.SDXL, ""),
+            schedulerOptions(listOf("Karras", "Normal"), ""),
         )
     }
 }

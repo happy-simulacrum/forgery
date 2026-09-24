@@ -5,7 +5,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.testing.TestDispatcherRule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,19 +45,15 @@ private class FakeGenerationRepository(
 }
 
 private class FakeModulesSelectionRepository : ModulesSelectionRepository {
-    private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
+    private val stored = MutableStateFlow(emptyList<String>())
 
-    private fun flowOf(mode: GenerationMode) =
-        stored.getOrPut(mode) { MutableStateFlow(emptyList()) }
+    override fun observeModules(): Flow<List<String>> = stored.asStateFlow()
 
-    override fun observeModules(mode: GenerationMode): Flow<List<String>> =
-        flowOf(mode).asStateFlow()
-
-    override suspend fun saveModules(mode: GenerationMode, modules: List<String>) {
-        flowOf(mode).value = modules
+    override suspend fun saveModules(modules: List<String>) {
+        stored.value = modules
     }
 
-    fun current(mode: GenerationMode) = flowOf(mode).value
+    fun current() = stored.value
 }
 
 class ModulesViewModelTest {
@@ -98,7 +93,7 @@ class ModulesViewModelTest {
             it is ModulesUiState.Success && it.selected == listOf("ae.safetensors")
         } as ModulesUiState.Success
         assertEquals(listOf("ae.safetensors"), selected.selected)
-        assertEquals(listOf("ae.safetensors"), selection.current(GenerationMode.SDXL))
+        assertEquals(listOf("ae.safetensors"), selection.current())
         vm.onAction(ModulesAction.Toggle("ae.safetensors"))
         val cleared = vm.uiState.first {
             it is ModulesUiState.Success && it.selected.isEmpty()
@@ -109,7 +104,7 @@ class ModulesViewModelTest {
     @Test
     fun `clear empties selection`() = runTest {
         val (vm, _, selection) = loaded()
-        selection.saveModules(GenerationMode.SDXL, listOf("ae.safetensors", "clip_l.safetensors"))
+        selection.saveModules(listOf("ae.safetensors", "clip_l.safetensors"))
         vm.uiState.first {
             it is ModulesUiState.Success && it.selected.size == 2
         }
@@ -135,10 +130,10 @@ class ModulesViewModelTest {
     @Test
     fun `refresh prunes stale persisted selection`() = runTest {
         val selection = FakeModulesSelectionRepository()
-        selection.saveModules(GenerationMode.SDXL, listOf("ae.safetensors", "gone.safetensors"))
+        selection.saveModules(listOf("ae.safetensors", "gone.safetensors"))
         val (_, state, _) = loaded(selection = selection)
         assertEquals(listOf("ae.safetensors"), state.selected)
-        assertEquals(listOf("ae.safetensors"), selection.current(GenerationMode.SDXL))
+        assertEquals(listOf("ae.safetensors"), selection.current())
     }
 
     @Test

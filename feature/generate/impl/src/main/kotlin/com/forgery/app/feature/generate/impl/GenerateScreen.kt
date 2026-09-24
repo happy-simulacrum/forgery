@@ -24,20 +24,22 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -47,7 +49,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.designsystem.ForgeryTheme
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
 import com.forgery.app.core.ui.DraftIntField
 import com.forgery.app.core.ui.DraftTextField
@@ -57,15 +58,15 @@ import com.forgery.app.core.ui.LoadingState
 import com.forgery.app.core.ui.AspectRatioGrid
 import com.forgery.app.core.ui.SeedInputRow
 import com.forgery.app.core.ui.SizeInputRow
+import kotlin.math.round
+import kotlin.math.roundToInt
 
 @Composable
 internal fun GenerateRoute(
     onNavigateToQueue: () -> Unit,
-    onNavigateToLora: (GenerationMode) -> Unit,
-    onNavigateToStyles: (GenerationMode) -> Unit,
-    onNavigateToMagic: (GenerationMode) -> Unit,
-    onNavigateToPower: () -> Unit,
-    onNavigateToModules: (GenerationMode) -> Unit,
+    onNavigateToLora: () -> Unit,
+    onNavigateToStyles: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: GenerateViewModel = hiltViewModel(),
 ) {
@@ -77,8 +78,6 @@ internal fun GenerateRoute(
         onNavigateToQueue = onNavigateToQueue,
         onNavigateToLora = onNavigateToLora,
         onNavigateToStyles = onNavigateToStyles,
-        onNavigateToMagic = onNavigateToMagic,
-        onNavigateToPower = onNavigateToPower,
         onNavigateToModules = onNavigateToModules,
         modifier = modifier,
     )
@@ -89,11 +88,9 @@ internal fun GenerateScreen(
     uiState: GenerateUiState,
     onAction: (GenerateAction) -> Unit,
     onNavigateToQueue: () -> Unit,
-    onNavigateToLora: (GenerationMode) -> Unit,
-    onNavigateToStyles: (GenerationMode) -> Unit,
-    onNavigateToMagic: (GenerationMode) -> Unit,
-    onNavigateToPower: () -> Unit,
-    onNavigateToModules: (GenerationMode) -> Unit,
+    onNavigateToLora: () -> Unit,
+    onNavigateToStyles: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -105,8 +102,6 @@ internal fun GenerateScreen(
             onNavigateToQueue = onNavigateToQueue,
             onNavigateToLora = onNavigateToLora,
             onNavigateToStyles = onNavigateToStyles,
-            onNavigateToMagic = onNavigateToMagic,
-            onNavigateToPower = onNavigateToPower,
             onNavigateToModules = onNavigateToModules,
             modifier = modifier,
         )
@@ -118,11 +113,9 @@ private fun GenerateContent(
     state: GenerateUiState.Success,
     onAction: (GenerateAction) -> Unit,
     onNavigateToQueue: () -> Unit,
-    onNavigateToLora: (GenerationMode) -> Unit,
-    onNavigateToStyles: (GenerationMode) -> Unit,
-    onNavigateToMagic: (GenerationMode) -> Unit,
-    onNavigateToPower: () -> Unit,
-    onNavigateToModules: (GenerationMode) -> Unit,
+    onNavigateToLora: () -> Unit,
+    onNavigateToStyles: () -> Unit,
+    onNavigateToModules: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val p = state.params
@@ -166,18 +159,6 @@ private fun GenerateContent(
                 )
             }
         }
-        item(key = "mode") {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                GenerationMode.entries.forEach { mode ->
-                    SegmentedButton(
-                        selected = p.mode == mode,
-                        onClick = { onAction(GenerateAction.ModeChanged(mode)) },
-                        shape = MaterialTheme.shapes.medium,
-                        label = { Text(mode.name) },
-                    )
-                }
-            }
-        }
 
         item(key = "prompt") {
             Column(
@@ -208,6 +189,19 @@ private fun GenerateContent(
                     minLines = 2,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { onNavigateToLora() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("ADD LORA") }
+                    OutlinedButton(
+                        onClick = { onNavigateToStyles() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("STYLES") }
+                }
             }
         }
 
@@ -224,11 +218,10 @@ private fun GenerateContent(
             )
         }
 
-        // Forge Neo "VAE / Text Encoder": separate menu, SDXL only.
-        if (p.mode == GenerationMode.SDXL) {
-            item(key = "vae") {
-                OutlinedButton(
-                    onClick = { onNavigateToModules(p.mode) },
+        // Forge Neo "VAE / Text Encoder": separate menu.
+        item(key = "vae") {
+            OutlinedButton(
+                onClick = { onNavigateToModules() },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
@@ -236,7 +229,6 @@ private fun GenerateContent(
                             (if (p.additionalModules.isEmpty()) "" else " (${p.additionalModules.size})"),
                     )
                 }
-            }
         }
 
         item(key = "params") {
@@ -267,28 +259,21 @@ private fun GenerateContent(
                             )
                             ForgeryDropdown(
                                 label = "",
-                                options = schedulerOptions(state.serverSchedulers, p.mode, p.scheduler),
+                                options = schedulerOptions(state.serverSchedulers, p.scheduler),
                                 selected = p.scheduler,
                                 onSelect = { onAction(GenerateAction.SchedulerChanged(it)) },
                             )
                         }
                     }
-                    SliderRow("Steps", p.steps.toString(), p.steps.toFloat(), 1f..50f, 49,
+                    SliderRow("Steps", p.steps.toString(), p.steps.toFloat(), 1f..50f, 48,
                         parseManual = { parseStepsInput(it, 1f..50f)?.toFloat() },
-                        onChange = { onAction(GenerateAction.StepsChanged(it.toInt())) },
+                        onChange = { onAction(GenerateAction.StepsChanged(snapSteps(it))) },
                     )
-                    SliderRow("CFG", "%.1f".format(p.cfgScale), p.cfgScale.toFloat(), 0f..15f, 30,
+                    SliderRow("CFG", "%.1f".format(p.cfgScale), p.cfgScale.toFloat(), 0f..15f, 29,
                         keyboardType = KeyboardType.Decimal,
                         parseManual = { parseCfgInput(it, 0f..15f)?.toFloat() },
-                        onChange = { onAction(GenerateAction.CfgChanged((it.toDouble()))) },
+                        onChange = { onAction(GenerateAction.CfgChanged(snapCfg(it.toDouble()))) },
                     )
-                    if (p.mode == GenerationMode.FLUX) {
-                        DecimalField(
-                            label = "Distilled",
-                            value = inp.distilled,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { onAction(GenerateAction.DistilledChanged(it)) }
-                    }
                     SizeInputRow(
                         width = inp.width,
                         height = inp.height,
@@ -298,7 +283,6 @@ private fun GenerateContent(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     AspectRatioGrid(
-                        mode = p.mode,
                         currentWidth = p.width,
                         currentHeight = p.height,
                         onSelect = { w, h -> onAction(GenerateAction.SizeChanged(w, h)) },
@@ -332,32 +316,6 @@ private fun GenerateContent(
                         )
                     }
                 }
-            }
-        }
-
-        item(key = "lora") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { onNavigateToLora(p.mode) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("ADD LORA") }
-                OutlinedButton(
-                    onClick = { onNavigateToStyles(p.mode) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("STYLES") }
-            }
-        }
-
-        item(key = "magic") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { onNavigateToMagic(p.mode) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("MAGIC PROMPT") }
-                OutlinedButton(
-                    onClick = onNavigateToPower,
-                    modifier = Modifier.weight(1f),
-                ) { Text("POWER") }
             }
         }
 
@@ -578,6 +536,9 @@ private fun SliderRow(
     }
     if (showInput) {
         var text by remember(value) { mutableStateOf(value) }
+        val focusRequester = remember { FocusRequester() }
+        val keyboardController = LocalSoftwareKeyboardController.current
+        LaunchedEffect(Unit) { focusRequester.requestFocus(); keyboardController?.show() }
         AlertDialog(
             onDismissRequest = { showInput = false },
             confirmButton = {
@@ -603,7 +564,7 @@ private fun SliderRow(
                     onValueChange = { text = it },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
                 )
             },
         )
@@ -616,10 +577,13 @@ internal fun parseStepsInput(raw: String, range: ClosedFloatingPointRange<Float>
     return v.coerceIn(range.start.toInt(), range.endInclusive.toInt())
 }
 
-/** Manual CFG input: decimal, clamped to the slider range; null when not a number. */
+internal fun snapSteps(v: Float): Int = v.roundToInt().coerceIn(1, 50)
+internal fun snapCfg(v: Double): Double = (round(v * 2) / 2.0).coerceIn(0.0, 15.0)
+
+/** Manual CFG input: decimal, snapped to 0.5 and clamped; null when not a number. */
 internal fun parseCfgInput(raw: String, range: ClosedFloatingPointRange<Float>): Double? {
     val v = raw.trim().toDoubleOrNull() ?: return null
-    return v.coerceIn(range.start.toDouble(), range.endInclusive.toDouble())
+    return snapCfg(v)
 }
 
 /**
@@ -660,23 +624,20 @@ private fun LabelHeader(
 
 /**
  * Scheduler dropdown options: full server list when available, curated
- * per-mode fallback offline. The current value is always kept so a saved
+ * fallback offline. The current value is always kept so a saved
  * (or server-hidden) selection never silently disappears.
  */
 internal fun schedulerOptions(
     server: List<String>,
-    mode: GenerationMode,
     current: String,
 ): List<String> {
-    val base = server.ifEmpty { schedulerOptionsFor(mode) }
+    val base = server.ifEmpty { schedulerOptionsFor() }
     return if (current.isNotBlank() && current !in base) base + current else base
 }
 
-/** Scheduler options per mode — mirrors resolver neo.js defaults + index.html selects. */
-internal fun schedulerOptionsFor(mode: GenerationMode): List<String> = when (mode) {    GenerationMode.SDXL -> listOf("Karras", "Normal", "Simple", "Exponential")
-    GenerationMode.FLUX -> listOf("Simple", "Beta", "Normal", "Karras")
-    GenerationMode.QWEN -> listOf("Simple", "Normal")
-}
+/** Scheduler options — mirrors resolver neo.js defaults + index.html selects. */
+internal fun schedulerOptionsFor(): List<String> =
+    listOf("Karras", "Normal", "Simple", "Exponential")
 
 /**
  * Raw decimal passthrough: the VM owns the [TextFieldValue], parsing happens
@@ -738,8 +699,6 @@ private fun GenerateScreenPreview() {
             onNavigateToQueue = {},
             onNavigateToLora = {},
             onNavigateToStyles = {},
-            onNavigateToMagic = {},
-            onNavigateToPower = {},
             onNavigateToModules = {},
         )
     }

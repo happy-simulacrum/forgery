@@ -3,7 +3,6 @@ package com.forgery.app.core.data
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import app.cash.turbine.test
 import com.forgery.app.core.datastore.ForgeryPreferencesDataSource
-import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.testing.TestDispatcherRule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,30 +43,30 @@ class PromptDraftRepositoryTest {
     @Test
     fun `typing is visible immediately but not on disk yet`() = runTest {
         val (prefs, repo) = repo()
-        repo.setPrompt(GenerationMode.SDXL, "a ca", "")
-        assertEquals("a ca", repo.observeDraft(GenerationMode.SDXL).first().prompt)
+        repo.setPrompt("a ca", "")
+        assertEquals("a ca", repo.observeDraft().first().prompt)
         // Disk still empty — no echo in flight to race the cursor.
-        assertEquals("", prefs.observePromptDraft(GenerationMode.SDXL).first().prompt)
+        assertEquals("", prefs.observePromptDraft().first().prompt)
     }
 
     @Test
     fun `flush persists latest typing`() = runTest {
         val (prefs, repo) = repo()
-        repo.setPrompt(GenerationMode.SDXL, "a", "")
-        repo.setPrompt(GenerationMode.SDXL, "ab", "")
-        repo.setPrompt(GenerationMode.SDXL, "abc", "")
+        repo.setPrompt("a", "")
+        repo.setPrompt("ab", "")
+        repo.setPrompt("abc", "")
         repo.flushNow()
-        assertEquals("abc", prefs.observePromptDraft(GenerationMode.SDXL).first().prompt)
-        assertEquals("abc", repo.observeDraft(GenerationMode.SDXL).first().prompt)
+        assertEquals("abc", prefs.observePromptDraft().first().prompt)
+        assertEquals("abc", repo.observeDraft().first().prompt)
     }
 
     @Test
     fun `append composes onto unflushed typing`() = runTest {
         val (prefs, repo) = repo()
-        repo.setPrompt(GenerationMode.SDXL, "a cat", "blurry")
-        repo.appendPrompt(GenerationMode.SDXL, "<lora:x>", "trig")
+        repo.setPrompt("a cat", "blurry")
+        repo.appendPrompt("<lora:x>", "trig")
         repo.flushNow()
-        val disk = prefs.observePromptDraft(GenerationMode.SDXL).first()
+        val disk = prefs.observePromptDraft().first()
         assertEquals("a cat <lora:x>", disk.prompt)
         assertEquals("blurry trig", disk.negativePrompt)
     }
@@ -75,21 +74,11 @@ class PromptDraftRepositoryTest {
     @Test
     fun `disk changes flow through when clean`() = runTest {
         val (_, repo) = repo()
-        repo.observeDraft(GenerationMode.SDXL).test {
+        repo.observeDraft().test {
             assertEquals("", awaitItem().prompt)
             // External write straight to disk (no pending typing).
-            repo.setPrompt(GenerationMode.SDXL, "from styles", "")
+            repo.setPrompt("from styles", "")
             assertEquals("from styles", awaitItem().prompt)
         }
-    }
-
-    @Test
-    fun `modes are independent`() = runTest {
-        val (_, repo) = repo()
-        repo.setPrompt(GenerationMode.SDXL, "xl", "")
-        repo.setPrompt(GenerationMode.FLUX, "flux", "")
-        repo.flushNow()
-        assertEquals("flux", repo.observeDraft(GenerationMode.FLUX).first().prompt)
-        assertEquals("xl", repo.observeDraft(GenerationMode.SDXL).first().prompt)
     }
 }

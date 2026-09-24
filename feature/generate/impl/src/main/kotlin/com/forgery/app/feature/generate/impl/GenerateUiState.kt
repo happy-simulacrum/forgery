@@ -23,7 +23,6 @@ data class GenerateInputs(
     val batchCount: TextFieldValue = TextFieldValue("1", TextRange(1)),
     val steps: TextFieldValue = TextFieldValue("20", TextRange(2)),
     val cfg: TextFieldValue = TextFieldValue("7.0", TextRange(3)),
-    val distilled: TextFieldValue = TextFieldValue("3.5", TextRange(3)),
     val hrUpscaler: TextFieldValue = TextFieldValue("Latent", TextRange(6)),
     val hrScale: TextFieldValue = TextFieldValue("1.5", TextRange(3)),
     val hrSteps: TextFieldValue = TextFieldValue("6", TextRange(1)),
@@ -63,19 +62,9 @@ sealed interface EngineState {
     data class Failed(val message: String) : EngineState
 }
 
-/** Legacy defaults: SDXL classic, Flux guidance-like, Qwen/Z-Image (neo.js: steps 8, cfg 1.0). */
-fun defaultParamsFor(mode: com.forgery.app.core.model.GenerationMode): GenerationParams =
-    when (mode) {
-        com.forgery.app.core.model.GenerationMode.SDXL -> GenerationParams(
-            mode = mode, steps = 20, cfgScale = 7.0, width = 1024, height = 1024,
-            sampler = "Euler a", scheduler = "Karras",
-        )
-        com.forgery.app.core.model.GenerationMode.FLUX -> GenerationParams(
-            mode = mode, steps = 20, cfgScale = 3.5, distilledCfgScale = 3.5, width = 1024, height = 1024,
-            sampler = "Euler", scheduler = "Normal",
-        )
-        com.forgery.app.core.model.GenerationMode.QWEN -> GenerationParams(
-            mode = mode, steps = 8, cfgScale = 1.0, width = 1024, height = 1024,
-            sampler = "Euler", scheduler = "Simple",
-        )
-    }
+/** Legacy defaults: SDXL classic. */
+fun defaultParams(): GenerationParams =
+    GenerationParams(
+        steps = 20, cfgScale = 7.0, width = 1024, height = 1024,
+        sampler = "Euler a", scheduler = "Karras",
+    )

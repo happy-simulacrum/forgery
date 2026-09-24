@@ -112,17 +112,20 @@ class ConverterRegressionTest {
     }
 
     @Test
-    fun `chat posts JsonObject body`() = runTest {
-        val server = Loopback("""{"choices":[{"message":{"content":"hi"}}]}""")
+    fun `img2img posts JsonObject body`() = runTest {
+        val server = Loopback("""{"images":["BBB"]}""")
         try {
-            val svc = retrofit(server.port).create(LlmService::class.java)
-            val result = svc.chat(
-                null,
-                buildJsonObject { put("model", "m") },
+            val svc = retrofit(server.port).create(ForgeService::class.java)
+            val result = svc.img2img(
+                buildJsonObject {
+                    put("prompt", "y")
+                    put("steps", 10)
+                },
             )
             server.stop()
-            assertEquals("hi", result.llmFirstContent())
-            assertTrue(server.received.get().contains("\"model\":\"m\""))
+            assertEquals(listOf("BBB"), result.images())
+            assertTrue(server.received.get().contains("\"prompt\":\"y\""))
+            assertTrue(server.received.get().contains("\"steps\":10"))
         } finally {
             server.stop()
         }
@@ -132,8 +135,8 @@ class ConverterRegressionTest {
     fun `service methods accept JsonObject bodies`() {
         val txt2img = ForgeService::class.java.methods.first { it.name == "txt2img" }
         assertEquals(JsonObject::class.java, txt2img.parameterTypes[0])
-        val chat = LlmService::class.java.methods.first { it.name == "chat" }
-        assertEquals(JsonObject::class.java, chat.parameterTypes[1])
+        val img2img = ForgeService::class.java.methods.first { it.name == "img2img" }
+        assertEquals(JsonObject::class.java, img2img.parameterTypes[0])
     }
 
     @Test

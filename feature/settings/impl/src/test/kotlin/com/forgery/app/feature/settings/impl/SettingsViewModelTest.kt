@@ -132,16 +132,16 @@ class SettingsViewModelTest {
         val vm = viewModel()
         vm.uiState.first { it is SettingsUiState.Success }
 
-        vm.onAction(SettingsAction.PortComfyChanged(TextFieldValue("9999")))
+        vm.onAction(SettingsAction.PortWebUiChanged(TextFieldValue("9999")))
         vm.uiState.first {
-            it is SettingsUiState.Success && it.texts.portComfy.text == "9999"
+            it is SettingsUiState.Success && it.texts.portWebUi.text == "9999"
         }
         vm.onAction(SettingsAction.Save)
 
         val clean = vm.uiState.first {
-            it is SettingsUiState.Success && !it.isDirty && it.draft.portComfy == 9999
+            it is SettingsUiState.Success && !it.isDirty && it.draft.portWebUi == 9999
         } as SettingsUiState.Success
-        assertEquals(9999, repository.savedConfigs.last().portComfy)
+        assertEquals(9999, repository.savedConfigs.last().portWebUi)
         assertTrue(clean.draft.isConfigured)
     }
 }

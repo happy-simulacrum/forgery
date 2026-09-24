@@ -69,7 +69,7 @@ private fun LoraContent(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(16.dp)) {
-        Text("LoRA → ${state.mode.name} prompt")
+        Text("LoRA → prompt")
         OutlinedTextField(
             value = state.query,
             onValueChange = { onAction(LoraAction.QueryChanged(it)) },
