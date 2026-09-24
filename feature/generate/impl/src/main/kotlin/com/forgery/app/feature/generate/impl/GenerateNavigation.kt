@@ -9,7 +9,7 @@ fun NavGraphBuilder.generateScreen(
     onNavigateToQueue: () -> Unit,
     onNavigateToLora: () -> Unit,
     onNavigateToStyles: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
 ) {
     composable<GenerateRoute> {
         GenerateRoute(

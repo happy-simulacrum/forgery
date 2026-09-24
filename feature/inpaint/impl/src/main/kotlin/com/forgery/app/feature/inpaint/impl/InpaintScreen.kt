@@ -55,7 +55,7 @@ import com.forgery.app.core.ui.LoadingState
 @Composable
 internal fun InpaintRoute(
     onBackClick: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: InpaintViewModel = hiltViewModel(),
 ) {
@@ -84,7 +84,7 @@ internal fun InpaintScreen(
     onAction: (InpaintAction) -> Unit,
     onPickImage: () -> Unit,
     onBackClick: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -107,7 +107,7 @@ private fun InpaintContent(
     activeStroke: MaskStroke?,
     onAction: (InpaintAction) -> Unit,
     onPickImage: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -216,7 +216,7 @@ private fun InpaintContent(
                     LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
                 }
                 OutlinedButton(
-                    onClick = onNavigateToModules,
+                    onClick = { onNavigateToModules(state.modelTitle) },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 ) {
                     Text(
@@ -443,7 +443,7 @@ private fun InpaintScreenPreview() {
             onAction = {},
             onPickImage = {},
             onBackClick = {},
-            onNavigateToModules = {},
+            onNavigateToModules = { _ -> },
         )
     }
 }

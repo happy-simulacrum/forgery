@@ -8,6 +8,7 @@ import com.forgery.app.core.data.ConnectionRepository
 import com.forgery.app.core.data.DefaultsRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
@@ -15,6 +16,7 @@ import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenDefaults
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.HrSettings
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -181,10 +184,6 @@ private class FakeDefaultsRepository : DefaultsRepository {
         stored.value = when (field) {
             DefaultField.PROMPT -> cur.copy(prompt = value)
             DefaultField.NEGATIVE -> cur.copy(negativePrompt = value)
-            DefaultField.MODEL -> cur.copy(modelTitle = value)
-            DefaultField.SAMPLER -> cur.copy(sampler = value)
-            DefaultField.SCHEDULER -> cur.copy(scheduler = value)
-            DefaultField.UPSCALER -> cur.copy(upscaler = value)
         }
     }
 
@@ -192,6 +191,26 @@ private class FakeDefaultsRepository : DefaultsRepository {
     fun seed(defaults: GenDefaults) {
         stored.value = defaults
     }
+}
+
+/** In-memory per-model params fake: map-backed, blank titles stored as-is. */
+private class FakeModelParamsRepository : ModelParamsRepository {
+    private val entries = MutableStateFlow<Map<String, ModelLastUsed>>(emptyMap())
+    val saved = mutableListOf<Pair<String, ModelLastUsed>>()
+
+    override fun observeForModel(modelTitle: String): Flow<ModelLastUsed?> =
+        entries.map { it[modelTitle] }
+
+    override suspend fun saveForModel(modelTitle: String, params: ModelLastUsed) {
+        entries.value = entries.value + (modelTitle to params)
+        saved += modelTitle to params
+    }
+
+    fun seed(modelTitle: String, params: ModelLastUsed) {
+        entries.value = entries.value + (modelTitle to params)
+    }
+
+    fun load(modelTitle: String) = entries.value[modelTitle]
 }
 
 /** In-memory handoff fake: real repo doubles as fake (set/consume one-shot semantics). */
@@ -213,7 +232,8 @@ class GenerateViewModelTest {
         drafts: FakePromptDraftRepository = this.drafts,
         hr: FakeHrSettingsRepository = hrRepo,
         defaults: FakeDefaultsRepository = FakeDefaultsRepository(),
-    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hr, selection, defaults, handoff)
+        modelParams: FakeModelParamsRepository = FakeModelParamsRepository(),
+    ) = GenerateViewModel(gen, queue, drafts, FakeConnectionRepository(configured), hr, selection, defaults, handoff, modelParams)
 
     @Test
     fun `starts uninitialized without catalog when not configured`() = runTest {
@@ -648,16 +668,17 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `init applies saved model sampler scheduler defaults`() = runTest {
+    fun `init ignores saved model sampler scheduler defaults, falls back to hardcoded`() = runTest {
+        // GenDefaults carries prompts only; model/sampler/scheduler live in
+        // per-model snapshots now.
         val defaults = FakeDefaultsRepository()
-        defaults.seed(
-            GenDefaults(modelTitle = "m.safetensors", sampler = "DPM++ 2M", scheduler = "Beta"),
-        )
+        defaults.seed(GenDefaults(prompt = "def pos", negativePrompt = "def neg"))
         val vm = viewModel(defaults = defaults)
         val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
-        assertEquals("m.safetensors", state.params.modelTitle)
-        assertEquals("DPM++ 2M", state.params.sampler)
-        assertEquals("Beta", state.params.scheduler)
+        assertEquals("", state.params.modelTitle)
+        assertEquals("Euler a", state.params.sampler)
+        assertEquals("Karras", state.params.scheduler)
+        assertTrue(state.params.additionalModules.isEmpty())
     }
 
     @Test
@@ -689,19 +710,15 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `upscaler default applies while hr untouched, explicit pick wins`() = runTest {
+    fun `gen defaults upscaler no longer touches hr, missing entry resets hr`() = runTest {
         val hr = FakeHrSettingsRepository()
+        hr.saveHr(HrSettings(enable = true, upscaler = "SwinIR"))
         val defaults = FakeDefaultsRepository()
-        defaults.seed(GenDefaults(upscaler = "ESRGAN"))
-        var vm = viewModel(hr = hr, defaults = defaults)
-        var state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
-        assertEquals("ESRGAN", state.hr.upscaler)
-
-        val hr2 = FakeHrSettingsRepository()
-        hr2.saveHr(HrSettings(upscaler = "SwinIR"))
-        vm = viewModel(hr = hr2, defaults = defaults)
-        state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
-        assertEquals("SwinIR", state.hr.upscaler)
+        defaults.seed(GenDefaults(prompt = "def pos", negativePrompt = "def neg"))
+        val vm = viewModel(hr = hr, defaults = defaults)
+        val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertEquals(HrSettings(), state.hr)
+        assertEquals("Latent", state.inputs.hrUpscaler.text)
     }
 
     @Test
@@ -733,7 +750,7 @@ class GenerateViewModelTest {
     }
 
     @Test
-    fun `save default persists current values`() = runTest {
+    fun `save default persists prompts only`() = runTest {
         val d = FakePromptDraftRepository()
         d.setPrompt("pos", "neg")
         val defaults = FakeDefaultsRepository()
@@ -743,17 +760,209 @@ class GenerateViewModelTest {
         vm.onAction(GenerateAction.SamplerChanged("DPM++ 2M"))
         vm.onAction(GenerateAction.SaveDefault(DefaultField.PROMPT))
         vm.onAction(GenerateAction.SaveDefault(DefaultField.NEGATIVE))
-        vm.onAction(GenerateAction.SaveDefault(DefaultField.MODEL))
-        vm.onAction(GenerateAction.SaveDefault(DefaultField.SAMPLER))
-        vm.onAction(GenerateAction.SaveDefault(DefaultField.SCHEDULER))
-        vm.onAction(GenerateAction.SaveDefault(DefaultField.UPSCALER))
         val saved = defaults.current()
         assertEquals("pos", saved.prompt)
         assertEquals("neg", saved.negativePrompt)
-        assertEquals("m.safetensors", saved.modelTitle)
-        assertEquals("DPM++ 2M", saved.sampler)
-        assertEquals("Karras", saved.scheduler)
-        assertEquals("Latent", saved.upscaler)
+    }
+
+    @Test
+    fun `init loads stored per-model entry`() = runTest {
+        val params = FakeModelParamsRepository()
+        params.seed(
+            "",
+            ModelLastUsed(
+                steps = 30,
+                cfgScale = 8.5,
+                width = 768,
+                height = 512,
+                sampler = "DPM++ 2M",
+                scheduler = "Beta",
+                batchSize = 2,
+                batchCount = 3,
+                enableHr = true,
+                hrUpscaler = "ESRGAN",
+                hrScale = 2.0,
+                hrSteps = 10,
+                hrDenoise = 0.5,
+                hrCfg = 3.0,
+                additionalModules = listOf("ae.safetensors"),
+            ),
+        )
+        val selection = FakeModulesSelectionRepository()
+        val hr = FakeHrSettingsRepository()
+        val vm = viewModel(selection = selection, hr = hr, modelParams = params)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.params.steps == 30
+        } as GenerateUiState.Success
+        assertEquals(30, state.params.steps)
+        assertEquals(8.5, state.params.cfgScale, 1e-9)
+        assertEquals(768, state.params.width)
+        assertEquals(512, state.params.height)
+        assertEquals("DPM++ 2M", state.params.sampler)
+        assertEquals("Beta", state.params.scheduler)
+        assertEquals(listOf("ae.safetensors"), state.params.additionalModules)
+        assertEquals(listOf("ae.safetensors"), selection.current())
+        assertTrue(state.hr.enable)
+        assertEquals("ESRGAN", state.hr.upscaler)
+        assertEquals(2.0, state.hr.scale, 1e-9)
+        // Prompts live their own life — entry load never touches them.
+        assertEquals("", state.params.prompt)
+        assertEquals("", state.params.negativePrompt)
+        // Raw input texts re-seeded from the entry.
+        assertEquals("768", state.inputs.width.text)
+        assertEquals("512", state.inputs.height.text)
+        assertEquals("30", state.inputs.steps.text)
+        assertEquals("ESRGAN", state.inputs.hrUpscaler.text)
+    }
+
+    @Test
+    fun `model change loads stored entry and keeps prompts`() = runTest {
+        val params = FakeModelParamsRepository()
+        params.seed(
+            "b.safetensors",
+            ModelLastUsed(
+                steps = 30,
+                cfgScale = 8.5,
+                width = 768,
+                height = 512,
+                sampler = "DPM++ 2M",
+                scheduler = "Beta",
+                enableHr = true,
+                hrUpscaler = "ESRGAN",
+                additionalModules = listOf("ae.safetensors"),
+            ),
+        )
+        val d = FakePromptDraftRepository()
+        d.setPrompt("typed", "n")
+        val vm = viewModel(drafts = d, modelParams = params)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModelChanged("b.safetensors"))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.modelTitle == "b.safetensors" && it.params.steps == 30
+        } as GenerateUiState.Success
+        assertEquals("b.safetensors", state.params.modelTitle)
+        assertEquals(30, state.params.steps)
+        assertEquals("DPM++ 2M", state.params.sampler)
+        assertEquals(listOf("ae.safetensors"), state.params.additionalModules)
+        assertTrue(state.hr.enable)
+        assertEquals("typed", state.params.prompt)
+        assertEquals("n", state.params.negativePrompt)
+    }
+
+    @Test
+    fun `model change without entry falls back to defaults and clears modules and hr`() = runTest {
+        val params = FakeModelParamsRepository()
+        val selection = FakeModulesSelectionRepository()
+        val hr = FakeHrSettingsRepository()
+        hr.saveHr(HrSettings(enable = true, upscaler = "ESRGAN"))
+        selection.saveModules(listOf("ae.safetensors"))
+        val vm = viewModel(selection = selection, hr = hr, modelParams = params)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.SamplerChanged("DPM++ 2M"))
+        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors")))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.params.additionalModules.isNotEmpty()
+        }
+        vm.onAction(GenerateAction.ModelChanged("unknown.safetensors"))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.modelTitle == "unknown.safetensors" && it.params.sampler == "Euler a"
+        } as GenerateUiState.Success
+        assertEquals(20, state.params.steps)
+        assertEquals(7.0, state.params.cfgScale, 1e-9)
+        assertEquals(1024, state.params.width)
+        assertEquals(1024, state.params.height)
+        assertTrue(state.params.additionalModules.isEmpty())
+        assertTrue(selection.current().isEmpty())
+        assertEquals(HrSettings(), state.hr)
+        assertEquals(HrSettings(), hr.current())
+    }
+
+    @Test
+    fun `generate saves per-model snapshot without seed`() = runTest {
+        val params = FakeModelParamsRepository()
+        val vm = viewModel(modelParams = params)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(GenerateAction.ModelChanged("a.safetensors"))
+        vm.onAction(GenerateAction.StepsChanged(30))
+        vm.onAction(GenerateAction.SeedChanged(TextFieldValue("123")))
+        vm.onAction(GenerateAction.ModulesChanged(listOf("ae.safetensors")))
+        vm.onAction(GenerateAction.HrToggled)
+        vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.hr.enable && it.params.additionalModules == listOf("ae.safetensors")
+        }
+        vm.onAction(GenerateAction.Generate)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Started") == true
+        }
+        // ModelLastUsed carries no seed/prompt fields by construction —
+        // the snapshot is params-only, seed always stays random (-1).
+        val entry = params.load("a.safetensors")!!
+        assertEquals(30, entry.steps)
+        assertEquals(7.0, entry.cfgScale, 1e-9)
+        assertEquals(1024, entry.width)
+        assertEquals(1024, entry.height)
+        assertEquals("Euler a", entry.sampler)
+        assertEquals("Karras", entry.scheduler)
+        assertEquals(1, entry.batchSize)
+        assertEquals(1, entry.batchCount)
+        assertTrue(entry.enableHr)
+        assertEquals("Latent", entry.hrUpscaler)
+        assertEquals(1.5, entry.hrScale, 1e-9)
+        assertEquals(listOf("ae.safetensors"), entry.additionalModules)
+    }
+
+    @Test
+    fun `stage saves per-model snapshot`() = runTest {
+        val params = FakeModelParamsRepository()
+        val vm = viewModel(modelParams = params)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(GenerateAction.ModelChanged("a.safetensors"))
+        vm.onAction(GenerateAction.StepsChanged(30))
+        vm.onAction(GenerateAction.StageQueue)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Staged") == true
+        }
+        val entry = params.load("a.safetensors")!!
+        assertEquals(30, entry.steps)
+        assertEquals("Euler a", entry.sampler)
+        assertTrue(entry.additionalModules.isEmpty())
+    }
+
+    @Test
+    fun `snapshot round-trips across model switches`() = runTest {
+        val params = FakeModelParamsRepository()
+        val vm = viewModel(modelParams = params)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(GenerateAction.ModelChanged("a.safetensors"))
+        vm.onAction(GenerateAction.StepsChanged(30))
+        vm.onAction(GenerateAction.Generate)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Started") == true
+        }
+        vm.onAction(GenerateAction.ModelChanged("b.safetensors"))
+        vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.modelTitle == "b.safetensors" && it.params.steps == 20
+        }
+        vm.onAction(GenerateAction.ModelChanged("a.safetensors"))
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success &&
+                it.params.modelTitle == "a.safetensors" && it.params.steps == 30
+        } as GenerateUiState.Success
+        assertEquals(30, state.params.steps)
+    }
+
+    @Test
+    fun `vae modules default to empty`() = runTest {
+        val vm = viewModel()
+        val state = vm.uiState.first { it is GenerateUiState.Success } as GenerateUiState.Success
+        assertTrue(state.params.additionalModules.isEmpty())
     }
 
     @Test

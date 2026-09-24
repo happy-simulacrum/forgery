@@ -18,5 +18,6 @@ abstract class DataModule {
     @Binds abstract fun bindHr(impl: DefaultHrSettingsRepository): HrSettingsRepository
     @Binds abstract fun bindDefaults(impl: DefaultDefaultsRepository): DefaultsRepository
     @Binds abstract fun bindModules(impl: DefaultModulesSelectionRepository): ModulesSelectionRepository
+    @Binds abstract fun bindModelParams(impl: DefaultModelParamsRepository): ModelParamsRepository
     @Binds abstract fun bindQueueInputs(impl: FileQueueInputs): QueueInputs
 }

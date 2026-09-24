@@ -12,6 +12,7 @@ import androidx.navigation.toRoute
 import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
@@ -41,6 +42,7 @@ class InpaintViewModel @Inject constructor(
     private val generationRepository: GenerationRepository,
     private val queueRepository: QueueRepository,
     private val modulesSelection: ModulesSelectionRepository,
+    private val modelParams: ModelParamsRepository,
     private val queueInputs: QueueInputs,
 ) : ViewModel() {
 
@@ -265,7 +267,12 @@ class InpaintViewModel @Inject constructor(
                     modelTitle = e.modelTitle,
                     sampler = e.sampler,
                     scheduler = e.scheduler,
-                    additionalModules = modulesSelection.observeModules().first(),
+                    // Read-only per-model modules: this checkpoint's record
+                    // wins; the global live selection is only the fallback
+                    // (no record yet / blank checkpoint). Never writes.
+                    additionalModules = modelParams.observeForModel(e.modelTitle).first()
+                        ?.additionalModules
+                        ?: modulesSelection.observeModules().first(),
                 )
                 // C-1 file-back: params-only payload (~1KB); source/mask PNG
                 // bytes live in filesDir/queue_inputs/<jobId>/, worker expands

@@ -4,8 +4,10 @@ import androidx.lifecycle.SavedStateHandle
 import com.forgery.app.core.common.FileFormat
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.model.HrSettings
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.core.testing.TestDispatcherRule
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -107,6 +110,25 @@ private class FakeHrSettingsRepository : HrSettingsRepository {
     }
 }
 
+private class FakeModelParamsRepository : ModelParamsRepository {
+    private val entries = MutableStateFlow(mapOf<String, ModelLastUsed>())
+
+    override fun observeForModel(modelTitle: String): Flow<ModelLastUsed?> =
+        entries.map { it[modelTitle] }
+
+    override suspend fun saveForModel(modelTitle: String, params: ModelLastUsed) {
+        entries.value = entries.value + (modelTitle to params)
+    }
+
+    fun seed(title: String, params: ModelLastUsed) {
+        entries.value = entries.value + (title to params)
+    }
+
+    fun current(title: String) = entries.value[title]
+
+    fun isEmpty() = entries.value.isEmpty()
+}
+
 class AnalyzeViewModelTest {
 
     @get:Rule
@@ -121,7 +143,8 @@ class AnalyzeViewModelTest {
     private fun viewModel(
         bytes: ByteArray?,
         savedStateHandle: SavedStateHandle = SavedStateHandle(),
-    ) = AnalyzeViewModel(savedStateHandle, FakeImageSource(bytes), drafts, hr, handoff)
+        modelParams: FakeModelParamsRepository = FakeModelParamsRepository(),
+    ) = AnalyzeViewModel(savedStateHandle, FakeImageSource(bytes), drafts, hr, handoff, modelParams)
 
     private suspend fun StateFlow<AnalyzeUiState>.success(): AnalyzeUiState.Success =
         first { it is AnalyzeUiState.Success } as AnalyzeUiState.Success
@@ -240,6 +263,59 @@ class AnalyzeViewModelTest {
     }
 
     @Test
+    fun `use again saves hr chunk into handing-off model record`() = runTest {
+        val modelParams = FakeModelParamsRepository()
+        val vm = viewModel(pngWithText(FULL_RAW), modelParams = modelParams)
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        vm.onAction(AnalyzeAction.UseAgain)
+        vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
+        assertEquals(
+            ModelLastUsed(
+                enableHr = true,
+                hrUpscaler = "Latent",
+                hrScale = 2.0,
+                hrSteps = 10,
+                hrDenoise = 0.7,
+                hrCfg = 7.0,
+            ),
+            modelParams.current("v1-5-pruned"),
+        )
+    }
+
+    @Test
+    fun `use again merges hr into existing model entry`() = runTest {
+        val modelParams = FakeModelParamsRepository()
+        modelParams.seed(
+            "v1-5-pruned",
+            ModelLastUsed(steps = 30, additionalModules = listOf("keep.safetensors")),
+        )
+        val vm = viewModel(pngWithText(FULL_RAW), modelParams = modelParams)
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        vm.onAction(AnalyzeAction.UseAgain)
+        vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
+        val entry = modelParams.current("v1-5-pruned")
+        assertEquals(30, entry?.steps)
+        assertEquals(listOf("keep.safetensors"), entry?.additionalModules)
+        assertEquals(true, entry?.enableHr)
+        assertEquals("Latent", entry?.hrUpscaler)
+        assertEquals(2.0, entry?.hrScale)
+        assertEquals(10, entry?.hrSteps)
+        assertEquals(0.7, entry?.hrDenoise)
+        assertEquals(7.0, entry?.hrCfg)
+    }
+
+    @Test
+    fun `use again without model title leaves model records untouched`() = runTest {
+        val modelParams = FakeModelParamsRepository()
+        val raw = "a dog\nNegative prompt: ugly\nSteps: 5, Sampler: Euler a, CFG scale: 7.0"
+        val vm = viewModel(pngWithText(raw), modelParams = modelParams)
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        vm.onAction(AnalyzeAction.UseAgain)
+        vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
+        assertTrue(modelParams.isEmpty())
+    }
+
+    @Test
     fun `use again with automatic vae hands off null modules`() = runTest {
         val raw = "a cat\nNegative prompt: blurry\nSteps: 10, VAE: Automatic"
         val vm = viewModel(pngWithText(raw))
@@ -251,7 +327,8 @@ class AnalyzeViewModelTest {
 
     @Test
     fun `use again without settings hands off nulls and leaves hr untouched`() = runTest {
-        val vm = viewModel(pngWithText("a dog\nNegative prompt: ugly"))
+        val modelParams = FakeModelParamsRepository()
+        val vm = viewModel(pngWithText("a dog\nNegative prompt: ugly"), modelParams = modelParams)
         vm.pickAndWait { it.prompt.isNotBlank() }
         vm.onAction(AnalyzeAction.UseAgain)
         vm.uiState.first { it is AnalyzeUiState.Success && it.statusMessage != null }
@@ -260,6 +337,7 @@ class AnalyzeViewModelTest {
             drafts.set,
         )
         assertTrue(hr.saved.isEmpty())
+        assertTrue(modelParams.isEmpty())
         assertEquals(RestoredParams(), handoff.consume())
     }
 

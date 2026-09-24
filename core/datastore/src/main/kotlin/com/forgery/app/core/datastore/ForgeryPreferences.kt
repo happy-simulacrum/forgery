@@ -12,10 +12,14 @@ import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenDefaults
 import com.forgery.app.core.model.HrSettings
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.UiPrefs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,6 +50,7 @@ object PrefsKeys {
     val DEF_SAMPLER = stringPreferencesKey("bojro_def_sampler")
     val DEF_SCHED = stringPreferencesKey("bojro_def_sched")
     val DEF_UPSCALER = stringPreferencesKey("bojro_def_upscaler")
+    val MODEL_PARAMS = stringPreferencesKey("bojro_model_params")
 }
 
 @Singleton
@@ -153,26 +158,43 @@ class ForgeryPreferencesDataSource @Inject constructor(
     private fun defaultsKey(field: DefaultField) = when (field) {
         DefaultField.PROMPT -> PrefsKeys.DEF_PROMPT
         DefaultField.NEGATIVE -> PrefsKeys.DEF_NEG
-        DefaultField.MODEL -> PrefsKeys.DEF_MODEL
-        DefaultField.SAMPLER -> PrefsKeys.DEF_SAMPLER
-        DefaultField.SCHEDULER -> PrefsKeys.DEF_SCHED
-        DefaultField.UPSCALER -> PrefsKeys.DEF_UPSCALER
     }
 
     fun observeDefaults(): Flow<GenDefaults> = dataStore.data.map { p ->
         GenDefaults(
             prompt = p[PrefsKeys.DEF_PROMPT].orEmpty(),
             negativePrompt = p[PrefsKeys.DEF_NEG].orEmpty(),
-            modelTitle = p[PrefsKeys.DEF_MODEL].orEmpty(),
-            sampler = p[PrefsKeys.DEF_SAMPLER].orEmpty(),
-            scheduler = p[PrefsKeys.DEF_SCHED].orEmpty(),
-            upscaler = p[PrefsKeys.DEF_UPSCALER].orEmpty(),
         )
     }
 
     suspend fun saveDefault(field: DefaultField, value: String) {
         dataStore.edit { e ->
             e[defaultsKey(field)] = value
+        }
+    }
+
+    // -- Last-used params per model (keyed by normalized model title) --
+
+    private val modelParamsJson = Json { ignoreUnknownKeys = true }
+    private val modelParamsSerializer = MapSerializer(String.serializer(), ModelLastUsed.serializer())
+
+    private fun decodeModelParams(raw: String?): Map<String, ModelLastUsed> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            modelParamsJson.decodeFromString(modelParamsSerializer, raw)
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    fun observeModelParams(): Flow<Map<String, ModelLastUsed>> =
+        dataStore.data.map { p -> decodeModelParams(p[PrefsKeys.MODEL_PARAMS]) }
+
+    suspend fun saveModelParams(key: String, params: ModelLastUsed) {
+        dataStore.edit { e ->
+            val current = decodeModelParams(e[PrefsKeys.MODEL_PARAMS])
+            e[PrefsKeys.MODEL_PARAMS] =
+                modelParamsJson.encodeToString(modelParamsSerializer, current + (key to params))
         }
     }
 

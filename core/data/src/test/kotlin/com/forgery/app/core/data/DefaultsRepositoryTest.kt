@@ -42,24 +42,16 @@ class DefaultsRepositoryTest {
         val repo = repo()
         repo.saveDefault(DefaultField.PROMPT, "a cat")
         repo.saveDefault(DefaultField.NEGATIVE, "blurry")
-        repo.saveDefault(DefaultField.MODEL, "model.safetensors")
-        repo.saveDefault(DefaultField.SAMPLER, "Euler")
-        repo.saveDefault(DefaultField.SCHEDULER, "Normal")
-        repo.saveDefault(DefaultField.UPSCALER, "Latent")
         assertEquals(
             GenDefaults(
                 prompt = "a cat",
                 negativePrompt = "blurry",
-                modelTitle = "model.safetensors",
-                sampler = "Euler",
-                scheduler = "Normal",
-                upscaler = "Latent",
             ),
             repo.observeDefaults().first(),
         )
         // Overwrite of a single field keeps the rest.
         repo.saveDefault(DefaultField.PROMPT, "a dog")
         assertEquals("a dog", repo.observeDefaults().first().prompt)
-        assertEquals("Euler", repo.observeDefaults().first().sampler)
+        assertEquals("blurry", repo.observeDefaults().first().negativePrompt)
     }
 }

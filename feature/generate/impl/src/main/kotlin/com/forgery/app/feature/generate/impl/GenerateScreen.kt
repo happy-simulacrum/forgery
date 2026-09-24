@@ -66,7 +66,7 @@ internal fun GenerateRoute(
     onNavigateToQueue: () -> Unit,
     onNavigateToLora: () -> Unit,
     onNavigateToStyles: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: GenerateViewModel = hiltViewModel(),
 ) {
@@ -90,7 +90,7 @@ internal fun GenerateScreen(
     onNavigateToQueue: () -> Unit,
     onNavigateToLora: () -> Unit,
     onNavigateToStyles: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -115,7 +115,7 @@ private fun GenerateContent(
     onNavigateToQueue: () -> Unit,
     onNavigateToLora: () -> Unit,
     onNavigateToStyles: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val p = state.params
@@ -214,14 +214,13 @@ private fun GenerateContent(
                 error = state.modelsError,
                 onRefresh = { onAction(GenerateAction.RefreshModels) },
                 onSelect = { onAction(GenerateAction.ModelChanged(it)) },
-                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.MODEL)) },
             )
         }
 
         // Forge Neo "VAE / Text Encoder": separate menu.
         item(key = "vae") {
             OutlinedButton(
-                onClick = { onNavigateToModules() },
+                onClick = { onNavigateToModules(p.modelTitle) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
@@ -241,10 +240,7 @@ private fun GenerateContent(
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Column(Modifier.weight(1f)) {
-                            LabelHeader(
-                                text = "Sampler",
-                                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.SAMPLER)) },
-                            )
+                            LabelHeader(text = "Sampler")
                             ForgeryDropdown(
                                 label = "",
                                 options = state.samplers.ifEmpty { listOf(p.sampler) },
@@ -253,10 +249,7 @@ private fun GenerateContent(
                             )
                         }
                         Column(Modifier.weight(1f)) {
-                            LabelHeader(
-                                text = "Scheduler",
-                                onSave = { onAction(GenerateAction.SaveDefault(DefaultField.SCHEDULER)) },
-                            )
+                            LabelHeader(text = "Scheduler")
                             ForgeryDropdown(
                                 label = "",
                                 options = schedulerOptions(state.serverSchedulers, p.scheduler),
@@ -338,10 +331,7 @@ private fun GenerateContent(
                     }
                     if (state.hr.enable) {
                         Spacer(Modifier.height(8.dp))
-                        LabelHeader(
-                            text = "Upscaler",
-                            onSave = { onAction(GenerateAction.SaveDefault(DefaultField.UPSCALER)) },
-                        )
+                        LabelHeader(text = "Upscaler")
                         if (state.upscalers.isEmpty()) {
                             DraftTextField(
                                 value = inp.hrUpscaler,
@@ -486,10 +476,9 @@ private fun ModelPicker(
     error: String?,
     onRefresh: () -> Unit,
     onSelect: (String) -> Unit,
-    onSave: () -> Unit,
 ) {
     Column {
-        LabelHeader(text = label, onSave = onSave)
+        LabelHeader(text = label)
         if (options.isEmpty()) {
             OutlinedTextField(
                 value = selected,
@@ -587,14 +576,14 @@ internal fun parseCfgInput(raw: String, range: ClosedFloatingPointRange<Float>):
 }
 
 /**
- * Section label with save-as-default (diskette) and optional clear (trash)
+ * Section label with optional save-as-default (diskette) and clear (trash)
  * actions next to the text, at label scale — not inside the input field.
  */
 @Composable
 private fun LabelHeader(
     text: String,
-    onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    onSave: (() -> Unit)? = null,
     onClear: (() -> Unit)? = null,
 ) {
     Row(
@@ -603,12 +592,14 @@ private fun LabelHeader(
     ) {
         Text(text, style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.width(2.dp))
-        IconButton(onClick = onSave, modifier = Modifier.size(36.dp)) {
-            Icon(
-                Icons.Filled.Save,
-                contentDescription = "Save $text as default",
-                modifier = Modifier.size(18.dp),
-            )
+        if (onSave != null) {
+            IconButton(onClick = onSave, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Filled.Save,
+                    contentDescription = "Save $text as default",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         if (onClear != null) {
             IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
@@ -699,7 +690,7 @@ private fun GenerateScreenPreview() {
             onNavigateToQueue = {},
             onNavigateToLora = {},
             onNavigateToStyles = {},
-            onNavigateToModules = {},
+            onNavigateToModules = { _ -> },
         )
     }
 }

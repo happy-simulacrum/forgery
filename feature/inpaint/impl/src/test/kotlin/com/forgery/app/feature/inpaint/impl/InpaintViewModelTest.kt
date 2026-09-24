@@ -4,9 +4,11 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.QueueSnapshot
@@ -16,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -92,6 +95,17 @@ private class FakeModulesSelectionRepository : ModulesSelectionRepository {
     }
 }
 
+private class FakeModelParamsRepository : ModelParamsRepository {
+    private val entries = MutableStateFlow(mapOf<String, ModelLastUsed>())
+
+    override fun observeForModel(modelTitle: String): Flow<ModelLastUsed?> =
+        entries.map { it[modelTitle] }
+
+    override suspend fun saveForModel(modelTitle: String, params: ModelLastUsed) {
+        entries.value = entries.value + (modelTitle to params)
+    }
+}
+
 class InpaintViewModelTest {
 
     @get:Rule
@@ -102,8 +116,9 @@ class InpaintViewModelTest {
         reader: ImageAttachmentReader = FakeImageReader(),
         savedStateHandle: SavedStateHandle = SavedStateHandle(),
         selection: ModulesSelectionRepository = FakeModulesSelectionRepository(),
+        modelParams: ModelParamsRepository = FakeModelParamsRepository(),
         inputs: QueueInputs = FakeQueueInputs(),
-    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection, inputs)
+    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection, modelParams, inputs)
 
     private suspend fun StateFlow<InpaintUiState>.success(): InpaintUiState.Success =
         first { it is InpaintUiState.Success } as InpaintUiState.Success
@@ -261,5 +276,49 @@ class InpaintViewModelTest {
         val job = queue.immediate.first().first.first()
         assertEquals(listOf("ae.safetensors"), job.additionalModules)
         assertTrue(job.payloadJson.contains("forge_additional_modules"))
+    }
+
+    @Test
+    fun `enqueue reads modules from selected checkpoint record`() = runTest {
+        val selection = FakeModulesSelectionRepository()
+        selection.saveModules(listOf("global.safetensors"))
+        val modelParams = FakeModelParamsRepository()
+        modelParams.saveForModel(
+            "chk.safetensors",
+            ModelLastUsed(additionalModules = listOf("per-model.safetensors")),
+        )
+        val vm = viewModel(selection = selection, modelParams = modelParams)
+        vm.uiState.success()
+        vm.onAction(InpaintAction.PickResult("content://img/1"))
+        vm.uiState.first { it is InpaintUiState.Success && it.source != null }
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(InpaintAction.ModelChanged(TextFieldValue("chk.safetensors")))
+        vm.onAction(InpaintAction.Generate)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals(listOf("per-model.safetensors"), job.additionalModules)
+        assertTrue(job.payloadJson.contains("forge_additional_modules"))
+    }
+
+    @Test
+    fun `enqueue without checkpoint record falls back to shared selection`() = runTest {
+        val selection = FakeModulesSelectionRepository()
+        selection.saveModules(listOf("global.safetensors"))
+        val vm = viewModel(selection = selection, modelParams = FakeModelParamsRepository())
+        vm.uiState.success()
+        vm.onAction(InpaintAction.PickResult("content://img/1"))
+        vm.uiState.first { it is InpaintUiState.Success && it.source != null }
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(InpaintAction.ModelChanged(TextFieldValue("unknown.safetensors")))
+        vm.onAction(InpaintAction.Generate)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals(listOf("global.safetensors"), job.additionalModules)
     }
 }

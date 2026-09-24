@@ -7,7 +7,7 @@ import com.forgery.app.feature.inpaint.api.InpaintRoute
 
 fun NavGraphBuilder.inpaintScreen(
     onBackClick: () -> Unit,
-    onNavigateToModules: () -> Unit,
+    onNavigateToModules: (String) -> Unit,
 ) {
     composable<InpaintRoute> {
         InpaintRoute(

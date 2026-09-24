@@ -10,6 +10,7 @@ import com.forgery.app.core.data.ConnectionRepository
 import com.forgery.app.core.data.DefaultsRepository
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.QueueRepository
@@ -18,6 +19,7 @@ import com.forgery.app.core.data.payloadToJsonString
 import com.forgery.app.core.model.DefaultField
 import com.forgery.app.core.model.GenerationParams
 import com.forgery.app.core.model.HrSettings
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueSnapshot
 import com.forgery.app.core.model.RestoredParams
@@ -74,6 +76,7 @@ class GenerateViewModel @Inject constructor(
     private val modulesSelection: ModulesSelectionRepository,
     private val defaults: DefaultsRepository,
     private val handoff: AnalyzeHandoffRepository,
+    private val modelParams: ModelParamsRepository,
 ) : ViewModel() {
 
     /** Non-text, non-HR, non-modules params; prompt text + HR + modules live in repositories. */
@@ -214,9 +217,12 @@ class GenerateViewModel @Inject constructor(
             draftData.collect { dd -> mergeExternal(dd) }
         }
         viewModelScope.launch {
-            // Saved defaults first, Analyze handoff wins when present.
+            // Saved prompt defaults first, per-model snapshot over the
+            // hardcoded defaults, Analyze handoff wins when present.
+            // Prompts are owned by drafts + GenDefaults and never touched
+            // by model entries.
             applyDefaults()
-            seedNumericInputsFromRest()
+            applyModelEntry(rest.value.modelTitle)
             handoff.observe().collect { r ->
                 if (r != null) {
                     applyHandoff(r)
@@ -246,19 +252,13 @@ class GenerateViewModel @Inject constructor(
     }
 
     /**
-     * Saved user defaults over the hardcoded [defaultParams]: non-blank
-     * stored values win for model/sampler/scheduler; blank drafts are filled
-     * from stored prompts; the upscaler default applies while HR still holds
-     * the stock value (explicit user picks persist live and are kept).
+     * Saved prompt defaults over blank drafts: non-blank stored prompts fill
+     * blank drafts. Model/sampler/scheduler/upscaler persistence moved to
+     * per-model snapshots ([ModelParamsRepository]); [GenDefaults] carries
+     * only prompt/neg here.
      */
     private suspend fun applyDefaults() {
-        val base = defaultParams()
         val d = defaults.observeDefaults().first()
-        rest.value = base.copy(
-            modelTitle = d.modelTitle.ifBlank { base.modelTitle },
-            sampler = d.sampler.ifBlank { base.sampler },
-            scheduler = d.scheduler.ifBlank { base.scheduler },
-        )
         val draft = promptDrafts.observeDraft().first()
         if ((draft.prompt.isBlank() && d.prompt.isNotBlank()) ||
             (draft.negativePrompt.isBlank() && d.negativePrompt.isNotBlank())
@@ -268,9 +268,57 @@ class GenerateViewModel @Inject constructor(
                 draft.negativePrompt.ifBlank { d.negativePrompt },
             )
         }
-        val hr = hrSettings.observeHr().first()
-        if (hr.upscaler == HrSettings().upscaler && d.upscaler.isNotBlank()) {
-            hrSettings.saveHr(hr.copy(upscaler = d.upscaler))
+    }
+
+    /**
+     * Per-model snapshot over the hardcoded [defaultParams]: the stored entry
+     * for [modelTitle] wins when present (domain params + raw input texts +
+     * HR repo + modules repo); otherwise domain params reset to defaults with
+     * empty modules and stock HR. Prompts live their own life (drafts +
+     * GenDefaults) and are never touched here.
+     */
+    private suspend fun applyModelEntry(modelTitle: String) {
+        val entry = modelParams.observeForModel(modelTitle).first()
+        if (entry != null) {
+            val cur = rest.value
+            rest.value = cur.copy(
+                steps = entry.steps,
+                cfgScale = entry.cfgScale,
+                width = entry.width,
+                height = entry.height,
+                sampler = entry.sampler,
+                scheduler = entry.scheduler,
+                batchSize = entry.batchSize,
+                batchCount = entry.batchCount,
+                modelTitle = modelTitle,
+                enableHr = entry.enableHr,
+                hrUpscaler = entry.hrUpscaler,
+                hrScale = entry.hrScale,
+                hrSteps = entry.hrSteps,
+                hrDenoise = entry.hrDenoise,
+                hrCfg = entry.hrCfg,
+                additionalModules = entry.additionalModules,
+            )
+            val hr = HrSettings(
+                enable = entry.enableHr,
+                upscaler = entry.hrUpscaler,
+                scale = entry.hrScale,
+                steps = entry.hrSteps,
+                denoise = entry.hrDenoise,
+                cfg = entry.hrCfg,
+            )
+            lastHrSaved = hr
+            hrSettings.saveHr(hr)
+            modulesSelection.saveModules(entry.additionalModules)
+            seedInputsFromRest(hr)
+        } else {
+            val d = defaultParams()
+            rest.value = d.copy(modelTitle = modelTitle)
+            val hr = HrSettings()
+            lastHrSaved = hr
+            hrSettings.saveHr(hr)
+            modulesSelection.saveModules(emptyList())
+            seedInputsFromRest(hr)
         }
     }
 
@@ -310,7 +358,19 @@ class GenerateViewModel @Inject constructor(
         if (changed) inputs.value = next
     }
 
-    /** Re-seeds numeric raws from committed [rest] (init, handoff, presets). */
+    /** Re-seeds numeric + HR raw texts from committed [rest] + [hr] (model presets). */
+    private fun seedInputsFromRest(hr: HrSettings) {
+        seedNumericInputsFromRest()
+        inputs.value = inputs.value.copy(
+            hrUpscaler = textField(hr.upscaler),
+            hrScale = textField(hr.scale.toString()),
+            hrSteps = textField(hr.steps.toString()),
+            hrDenoise = textField(hr.denoise.toString()),
+            hrCfg = textField(hr.cfg.toString()),
+        )
+    }
+
+    /** Re-seeds numeric raws from committed [rest] (handoff). */
     private fun seedNumericInputsFromRest() {
         val r = rest.value
         inputs.value = inputs.value.copy(
@@ -430,18 +490,20 @@ class GenerateViewModel @Inject constructor(
                 statusMessage.value = "Negative prompt cleared."
             }
             is GenerateAction.SaveDefault -> viewModelScope.launch {
+                // Only prompt defaults survive; model/sampler/scheduler/
+                // upscaler persistence moved to per-model snapshots.
                 val value = when (action.field) {
                     DefaultField.PROMPT -> inputs.value.prompt.text
                     DefaultField.NEGATIVE -> inputs.value.negativePrompt.text
-                    DefaultField.MODEL -> rest.value.modelTitle
-                    DefaultField.SAMPLER -> rest.value.sampler
-                    DefaultField.SCHEDULER -> rest.value.scheduler
-                    DefaultField.UPSCALER -> inputs.value.hrUpscaler.text.ifBlank { current.hr.upscaler }
+                    else -> return@launch
                 }
                 defaults.saveDefault(action.field, value)
                 statusMessage.value = "Saved as default."
             }
-            is GenerateAction.ModelChanged -> rest.value = rest.value.copy(modelTitle = action.value)
+            is GenerateAction.ModelChanged -> viewModelScope.launch {
+                rest.value = rest.value.copy(modelTitle = action.value)
+                applyModelEntry(action.value)
+            }
             is GenerateAction.ModulesChanged -> viewModelScope.launch {
                 modulesSelection.saveModules(action.value)
             }
@@ -590,6 +652,30 @@ class GenerateViewModel @Inject constructor(
         )
     }
 
+    /** Persists the committed params as this model's last-used snapshot (no seed). */
+    private suspend fun saveModelSnapshot(p: GenerationParams) {
+        modelParams.saveForModel(
+            p.modelTitle,
+            ModelLastUsed(
+                steps = p.steps,
+                cfgScale = p.cfgScale,
+                width = p.width,
+                height = p.height,
+                sampler = p.sampler,
+                scheduler = p.scheduler,
+                batchSize = p.batchSize,
+                batchCount = p.batchCount,
+                enableHr = p.enableHr,
+                hrUpscaler = p.hrUpscaler,
+                hrScale = p.hrScale,
+                hrSteps = p.hrSteps,
+                hrDenoise = p.hrDenoise,
+                hrCfg = p.hrCfg,
+                additionalModules = p.additionalModules,
+            ),
+        )
+    }
+
     /** QUEUE button (1/4): persist without starting execution. */
     private fun stageQueue() {
         viewModelScope.launch {
@@ -601,6 +687,7 @@ class GenerateViewModel @Inject constructor(
                 statusMessage.value = "Prompt is empty."
                 return@launch
             }
+            saveModelSnapshot(p)
             try {
                 queueRepository.stage(listOf(buildJob(p)), origin = "single")
                 statusMessage.value = if (wasRunning) {
@@ -628,6 +715,7 @@ class GenerateViewModel @Inject constructor(
                 statusMessage.value = "Prompt is empty."
                 return@launch
             }
+            saveModelSnapshot(p)
             try {
                 queueRepository.enqueueImmediate(listOf(buildJob(p)), origin = "single")
                 statusMessage.value = if (wasRunning) {

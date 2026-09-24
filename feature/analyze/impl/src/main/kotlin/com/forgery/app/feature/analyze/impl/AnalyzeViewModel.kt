@@ -12,7 +12,9 @@ import com.forgery.app.core.common.parseA1111Settings
 import com.forgery.app.core.common.readPngMetadata
 import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
+import com.forgery.app.core.data.ModelParamsRepository
 import com.forgery.app.core.data.PromptDraftRepository
+import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +39,7 @@ class AnalyzeViewModel @Inject constructor(
     private val promptDrafts: PromptDraftRepository,
     private val hrSettings: HrSettingsRepository,
     private val handoff: AnalyzeHandoffRepository,
+    private val modelParams: ModelParamsRepository,
 ) : ViewModel() {
 
     // toRoute() needs the Android framework (Bundle) and throws on JVM unit tests;
@@ -164,6 +167,27 @@ class AnalyzeViewModel @Inject constructor(
                     hr = null,
                 ),
             )
+            // Per-model HR snapshot: the numeric handoff above is applied by
+            // GEN itself; the HR chunk lands in the handing-off model's
+            // record (merge — other entry fields preserved) so GEN picks it
+            // up on model switch. Any other model's record stays untouched.
+            if (s != null && s != A1111Settings()) {
+                val title = s.model
+                if (!title.isNullOrBlank()) {
+                    val base = modelParams.observeForModel(title).first() ?: ModelLastUsed()
+                    modelParams.saveForModel(
+                        title,
+                        base.copy(
+                            enableHr = s.hrEnable,
+                            hrUpscaler = s.hrUpscaler ?: base.hrUpscaler,
+                            hrScale = s.hrScale ?: base.hrScale,
+                            hrSteps = s.hrSteps ?: base.hrSteps,
+                            hrDenoise = s.hrDenoise ?: base.hrDenoise,
+                            hrCfg = s.cfg ?: base.hrCfg,
+                        ),
+                    )
+                }
+            }
             statusMessage.value = "Copied to prompt"
             _copyDone.tryEmit(Unit)
         }

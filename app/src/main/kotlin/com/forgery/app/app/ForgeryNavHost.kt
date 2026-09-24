@@ -119,11 +119,11 @@ fun ForgeryNavHost(
                 onNavigateToQueue = { nav.navigate(QueueRoute()) },
                 onNavigateToLora = { nav.navigate(LoraRoute) },
                 onNavigateToStyles = { nav.navigate(StylesRoute) },
-                onNavigateToModules = { nav.navigate(ModulesRoute) },
+                onNavigateToModules = { modelTitle -> nav.navigate(ModulesRoute(modelTitle)) },
             )
             inpaintScreen(
                 onBackClick = {},
-                onNavigateToModules = { nav.navigate(ModulesRoute) },
+                onNavigateToModules = { modelTitle -> nav.navigate(ModulesRoute(modelTitle)) },
             )
             queueScreen(onBackClick = {})
             galleryScreen(

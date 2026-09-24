@@ -94,17 +94,33 @@ data class HrSettings(
     val cfg: Double = 1.0,
 )
 
+/** Last-used generation params per model (keyed by normalized model title). */
+@Serializable
+data class ModelLastUsed(
+    val steps: Int = 20,
+    val cfgScale: Double = 7.0,
+    val width: Int = 1024,
+    val height: Int = 1024,
+    val sampler: String = "Euler",
+    val scheduler: String = "Normal",
+    val batchSize: Int = 1,
+    val batchCount: Int = 1,
+    val enableHr: Boolean = false,
+    val hrUpscaler: String = "Latent",
+    val hrScale: Double = 1.5,
+    val hrSteps: Int = 6,
+    val hrDenoise: Double = 0.4,
+    val hrCfg: Double = 1.0,
+    val additionalModules: List<String> = emptyList(),
+)
+
 /** Saved GEN defaults per generation mode, applied on start/mode switch. */
 data class GenDefaults(
     val prompt: String = "",
     val negativePrompt: String = "",
-    val modelTitle: String = "",
-    val sampler: String = "",
-    val scheduler: String = "",
-    val upscaler: String = "",
 )
 
-enum class DefaultField { PROMPT, NEGATIVE, MODEL, SAMPLER, SCHEDULER, UPSCALER }
+enum class DefaultField { PROMPT, NEGATIVE }
 
 data class QueueSnapshot(
     val running: Boolean,
