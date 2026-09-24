@@ -15,14 +15,18 @@ import com.forgery.app.core.database.QueueResultEntity
 import com.forgery.app.core.database.QueueStateDao
 import com.forgery.app.core.database.QueueStateEntity
 import com.forgery.app.core.database.QueueTx
+import com.forgery.app.core.common.Result
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.QueueSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -163,6 +167,35 @@ private data class WorkerLaunch(
     val policy: ExistingWorkPolicy,
 )
 
+/**
+ * Cancel()-safe backend stub for the compat constructor above: interrupt()
+ * inherits the [GenerationRepository] default ([Result.Error], never throws),
+ * so cancel() falls through to the local reset. Anything else is unused.
+ */
+private object NoopGenerationRepository : GenerationRepository {
+    override suspend fun fetchSdModels(): Result<List<String>> = TODO("noop backend")
+    override suspend fun fetchSamplers(): Result<List<String>> = TODO("noop backend")
+    override suspend fun fetchUpscalers(): Result<List<String>> = TODO("noop backend")
+    override suspend fun fetchSchedulers(): Result<List<String>> = TODO("noop backend")
+    override suspend fun fetchModules(): Result<List<String>> = TODO("noop backend")
+    override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
+        TODO("noop backend")
+    override suspend fun fetchLoraSidecar(basePath: String): Result<com.forgery.app.core.model.LoraMeta> =
+        TODO("noop backend")
+    override suspend fun fetchPromptStyles(): Result<List<com.forgery.app.core.model.StylePreset>> =
+        TODO("noop backend")
+    override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> =
+        TODO("noop backend")
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> =
+        TODO("noop backend")
+    override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
+        TODO("noop backend")
+    override suspend fun img2img(payload: Map<String, Any?>): Result<List<String>> =
+        TODO("noop backend")
+    override suspend fun progress(): Result<Double> = TODO("noop backend")
+    override suspend fun unloadModel(): Result<Unit> = TODO("noop backend")
+}
+
 @Singleton
 open class DefaultQueueRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -172,7 +205,32 @@ open class DefaultQueueRepository @Inject constructor(
     private val connectionRepository: ConnectionRepository,
     private val tx: QueueTx,
     private val inputFiles: QueueInputs,
+    private val generationRepository: GenerationRepository,
 ) : QueueRepository {
+
+    /**
+     * Backward-compat entry point for call sites without a generation
+     * backend (e.g. decode-only unit tests): cancel() degrades to a
+     * local-only reset, the server interrupt is a no-op [Result.Error].
+     */
+    constructor(
+        context: Context,
+        dao: QueueStateDao,
+        jobsDao: QueueJobsDao,
+        resultsDao: QueueResultsDao,
+        connectionRepository: ConnectionRepository,
+        tx: QueueTx,
+        inputFiles: QueueInputs,
+    ) : this(
+        context,
+        dao,
+        jobsDao,
+        resultsDao,
+        connectionRepository,
+        tx,
+        inputFiles,
+        NoopGenerationRepository,
+    )
 
     override fun observeSnapshot(): Flow<QueueSnapshot?> =
         combine(dao.observe(), jobsDao.observeOrdered(), resultsDao.observeAll()) { state, jobs, results ->
@@ -411,10 +469,26 @@ open class DefaultQueueRepository @Inject constructor(
     }
 
     override suspend fun cancel() {
+        // H-2 real cancel: stop the server-side task first (the in-flight
+        // txt2img would otherwise keep running after the local flag reset),
+        // then clear local state + worker exactly as before.
+        if (dao.get()?.running == true) {
+            try {
+                withTimeout(10_000) {
+                    generationRepository.interrupt()
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.w(QueueLogTag, "cancel: interrupt timed out", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(QueueLogTag, "cancel: interrupt failed", e)
+            }
+        }
         tx.run {
             dao.get()?.let { dao.save(it.copy(running = false, executingJobId = null)) }
         }
-        WorkManager.getInstance(context).cancelUniqueWork(GenerationWorker.UNIQUE_QUEUE)
+        cancelWork()
     }
 
     override suspend fun clearCompleted() {
@@ -504,6 +578,11 @@ open class DefaultQueueRepository @Inject constructor(
         WorkManager.getInstance(context)
             .enqueueUniqueWork(GenerationWorker.UNIQUE_QUEUE, policy, request)
         scheduleWatchdog()
+    }
+
+    /** Test seam (like [launchWorker]): unit tests record instead of touching WorkManager. */
+    protected open fun cancelWork() {
+        WorkManager.getInstance(context).cancelUniqueWork(GenerationWorker.UNIQUE_QUEUE)
     }
 
     private fun scheduleWatchdog() {

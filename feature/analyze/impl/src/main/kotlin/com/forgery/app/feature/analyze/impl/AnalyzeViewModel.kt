@@ -18,6 +18,7 @@ import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import javax.inject.Inject
 
 @HiltViewModel
@@ -133,23 +135,34 @@ class AnalyzeViewModel @Inject constructor(
                 _copyDone.tryEmit(Unit)
                 return@launch
             }
-            promptDrafts.setPrompt(p.prompt, p.negativePrompt)
             val s = p.settings
-            // Persist HR only when the image carried parseable settings;
-            // empty (all-null) or missing settings leave HR untouched.
-            // Merge into current HR (overwrite cfg) instead of keeping existing cfg.
-            if (s != null && s != A1111Settings()) {
-                val cur = hrSettings.observeHr().first()
-                hrSettings.saveHr(
-                    cur.copy(
-                        enable = s.hrEnable,
-                        upscaler = s.hrUpscaler ?: cur.upscaler,
-                        scale = s.hrScale ?: cur.scale,
-                        steps = s.hrSteps ?: cur.steps,
-                        denoise = s.hrDenoise ?: cur.denoise,
-                        cfg = s.cfg ?: cur.cfg,
-                    ),
-                )
+            // Memory is the source of truth, disk is best-effort: storage
+            // failure reports a status but still completes copyDone so the
+            // UI never hangs waiting for navigation.
+            try {
+                promptDrafts.setPrompt(p.prompt, p.negativePrompt)
+                // Persist HR only when the image carried parseable settings;
+                // empty (all-null) or missing settings leave HR untouched.
+                // Merge into current HR (overwrite cfg) instead of keeping existing cfg.
+                if (s != null && s != A1111Settings()) {
+                    val cur = hrSettings.observeHr().first()
+                    hrSettings.saveHr(
+                        cur.copy(
+                            enable = s.hrEnable,
+                            upscaler = s.hrUpscaler ?: cur.upscaler,
+                            scale = s.hrScale ?: cur.scale,
+                            steps = s.hrSteps ?: cur.steps,
+                            denoise = s.hrDenoise ?: cur.denoise,
+                            cfg = s.cfg ?: cur.cfg,
+                        ),
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                statusMessage.value = "Copy failed: storage unavailable"
+                _copyDone.tryEmit(Unit)
+                return@launch
             }
             handoff.set(
                 RestoredParams(

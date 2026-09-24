@@ -118,7 +118,8 @@ class InpaintViewModelTest {
         selection: ModulesSelectionRepository = FakeModulesSelectionRepository(),
         modelParams: ModelParamsRepository = FakeModelParamsRepository(),
         inputs: QueueInputs = FakeQueueInputs(),
-    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection, modelParams, inputs)
+        gen: FakeGenerationRepository = FakeGenerationRepository(),
+    ) = InpaintViewModel(savedStateHandle, reader, gen, queue, selection, modelParams, inputs)
 
     private suspend fun StateFlow<InpaintUiState>.success(): InpaintUiState.Success =
         first { it is InpaintUiState.Success } as InpaintUiState.Success
@@ -320,5 +321,62 @@ class InpaintViewModelTest {
         assertEquals(1, queue.immediate.size)
         val job = queue.immediate.first().first.first()
         assertEquals(listOf("global.safetensors"), job.additionalModules)
+    }
+
+    @Test
+    fun `refresh commits first model to draft and title when blank`() = runTest {
+        val vm = viewModel()
+        val state = vm.uiState.first {
+            it is InpaintUiState.Success && it.models.isNotEmpty() && it.modelTitle == "m.safetensors"
+        } as InpaintUiState.Success
+        assertEquals("m.safetensors", state.modelTitle)
+        assertEquals("m.safetensors", state.modelDraft.text)
+    }
+
+    @Test
+    fun `refresh preserves typed model`() = runTest {
+        val vm = viewModel()
+        vm.uiState.success()
+        vm.onAction(InpaintAction.ModelChanged(TextFieldValue("typed.safetensors")))
+        vm.onAction(InpaintAction.CommitInputs)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.modelTitle == "typed.safetensors"
+        }
+        vm.onAction(InpaintAction.RefreshModels)
+        val state = vm.uiState.first {
+            it is InpaintUiState.Success && it.models.isNotEmpty()
+        } as InpaintUiState.Success
+        assertEquals("typed.safetensors", state.modelTitle)
+        assertEquals("typed.safetensors", state.modelDraft.text)
+    }
+
+    @Test
+    fun `empty catalog keeps model blank`() = runTest {
+        val vm = viewModel(gen = FakeGenerationRepository(models = emptyList()))
+        val state = vm.uiState.success()
+        assertTrue(state.models.isEmpty())
+        assertEquals("", state.modelTitle)
+        assertEquals("", state.modelDraft.text)
+    }
+
+    @Test
+    fun `generate executes committed first model`() = runTest {
+        val vm = viewModel()
+        vm.uiState.success()
+        vm.onAction(InpaintAction.PickResult("content://img/1"))
+        vm.uiState.first { it is InpaintUiState.Success && it.source != null }
+        vm.onAction(InpaintAction.PromptChanged(TextFieldValue("a cat")))
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.modelTitle == "m.safetensors"
+        }
+        vm.onAction(InpaintAction.Generate)
+        vm.uiState.first {
+            it is InpaintUiState.Success && it.statusMessage == "Queued inpaint."
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals("m.safetensors", job.modelTitle)
+        assertTrue(job.payloadJson.contains("sd_model_checkpoint"))
+        assertTrue(job.payloadJson.contains("m.safetensors"))
     }
 }

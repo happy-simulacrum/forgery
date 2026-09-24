@@ -7,14 +7,17 @@ import com.forgery.app.core.data.ConnectionRepository
 import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.UiPrefs
 import com.forgery.app.core.network.ForgeApiFactory
+import com.forgery.app.core.network.ForgeService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 
 @HiltViewModel
@@ -32,6 +35,10 @@ class SettingsViewModel @Inject constructor(
     private val draft = MutableStateFlow<Draft?>(null)
     private val saving = MutableStateFlow(false)
     private val check = MutableStateFlow<CheckState>(CheckState.Idle)
+    private var checkJob: Job? = null
+
+    /** Test seam: replaces [ForgeApiFactory.createControl] in unit tests. */
+    var checkServiceProvider: ((baseUrl: String, cfClientId: String, cfClientSecret: String) -> ForgeService)? = null
 
     val uiState: StateFlow<SettingsUiState> = combine(
         connectionRepository.observe(),
@@ -44,7 +51,16 @@ class SettingsViewModel @Inject constructor(
             draft = draftValue?.config ?: stored,
             draftUi = draftValue?.ui ?: storedUi,
             texts = draftValue?.texts ?: SettingsTextDrafts.from(stored),
-            isDirty = draftValue != null,
+            // UiPrefs applies instantly (see UiPrefsChanged) — SAVE tracks
+            // connection edits only, otherwise it would stay lit forever.
+            isDirty = draftValue?.let { d ->
+                d.config != stored ||
+                    d.texts.baseIp.text != stored.baseIp ||
+                    d.texts.portWebUi.text != stored.portWebUi.toString() ||
+                    d.texts.extForgeUrl.text != stored.extForgeUrl ||
+                    d.texts.cfClientId.text != stored.cfClientId ||
+                    d.texts.cfClientSecret.text != stored.cfClientSecret
+            } == true,
             isSaving = isSaving,
             check = checkState,
         )
@@ -94,6 +110,7 @@ class SettingsViewModel @Inject constructor(
             }
             is SettingsAction.UiPrefsChanged -> {
                 draft.value = Draft(current.draft, action.prefs, current.texts)
+                viewModelScope.launch { connectionRepository.saveUiPrefs(action.prefs) }
             }
             SettingsAction.Save -> save(current)
             SettingsAction.Reset -> reset()
@@ -101,7 +118,10 @@ class SettingsViewModel @Inject constructor(
                 val d = draft.value ?: Draft(current.draft, current.draftUi, current.texts)
                 checkConnection(commitDraft(d).config)
             }
-            SettingsAction.DismissCheck -> check.value = CheckState.Idle
+            SettingsAction.DismissCheck -> {
+                checkJob?.cancel()
+                check.value = CheckState.Idle
+            }
         }
     }
 
@@ -149,14 +169,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun checkConnection(config: ConnectionConfig) {
-        viewModelScope.launch {
+        checkJob?.cancel()
+        checkJob = viewModelScope.launch {
             check.value = CheckState.Checking
-            check.value = try {
-                val api = forgeApiFactory.create(config.webUiBaseUrl())
-                val models = api.sdModels()
-                CheckState.Ok(models.size)
+            try {
+                val baseUrl = config.webUiBaseUrl()
+                val api = checkServiceProvider?.invoke(baseUrl, config.cfClientId, config.cfClientSecret)
+                    ?: forgeApiFactory.createControl(baseUrl, config.cfClientId, config.cfClientSecret)
+                val models = withTimeout(30_000) { api.sdModels() }
+                check.value = CheckState.Ok(models.size)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                CheckState.Failed(e.message ?: e.toString())
+                check.value = CheckState.Failed(e.message ?: e.toString())
             }
         }
     }

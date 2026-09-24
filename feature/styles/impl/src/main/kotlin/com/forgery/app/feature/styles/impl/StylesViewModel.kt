@@ -8,12 +8,14 @@ import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.data.StyleRepository
 import com.forgery.app.core.model.StylePreset
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.IOException
 import javax.inject.Inject
 
 @HiltViewModel
@@ -66,7 +68,15 @@ class StylesViewModel @Inject constructor(
 
     private fun apply(preset: StylePreset) {
         viewModelScope.launch {
-            promptDrafts.appendPrompt(preset.prompt, preset.negativePrompt)
+            // Memory is the source of truth, disk is best-effort.
+            try {
+                promptDrafts.appendPrompt(preset.prompt, preset.negativePrompt)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                notice.value = "Apply failed: storage unavailable"
+                return@launch
+            }
             notice.value = "Applied ${preset.name}"
         }
     }

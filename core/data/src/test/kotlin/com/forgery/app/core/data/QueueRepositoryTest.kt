@@ -14,7 +14,9 @@ import com.forgery.app.core.model.ConnectionConfig
 import com.forgery.app.core.model.QueueJob
 import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.UiPrefs
+import com.forgery.app.core.common.Result
 import com.forgery.app.core.testing.TestDispatcherRule
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -24,6 +26,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 
@@ -139,6 +142,43 @@ private class FakeQueueConnectionRepo : ConnectionRepository {
     }
 }
 
+/** Fake GenerationRepository: only interrupt() is exercised by cancel() tests. */
+private class FakeGenerationRepository(
+    var interruptError: Throwable? = null,
+    var hangInterrupt: Boolean = false,
+    var onInterrupt: (suspend () -> Unit)? = null,
+) : GenerationRepository {
+    var interruptCalls = 0
+    override suspend fun interrupt(): Result<Unit> {
+        interruptCalls++
+        onInterrupt?.invoke()
+        if (hangInterrupt) awaitCancellation()
+        interruptError?.let { throw it }
+        return Result.Success(Unit)
+    }
+    override suspend fun fetchSdModels(): Result<List<String>> = TODO("unused in queue tests")
+    override suspend fun fetchSamplers(): Result<List<String>> = TODO("unused in queue tests")
+    override suspend fun fetchUpscalers(): Result<List<String>> = TODO("unused in queue tests")
+    override suspend fun fetchSchedulers(): Result<List<String>> = TODO("unused in queue tests")
+    override suspend fun fetchModules(): Result<List<String>> = TODO("unused in queue tests")
+    override suspend fun fetchLoras(): Result<List<com.forgery.app.core.model.LoraItem>> =
+        TODO("unused in queue tests")
+    override suspend fun fetchLoraSidecar(basePath: String): Result<com.forgery.app.core.model.LoraMeta> =
+        TODO("unused in queue tests")
+    override suspend fun fetchPromptStyles(): Result<List<com.forgery.app.core.model.StylePreset>> =
+        TODO("unused in queue tests")
+    override suspend fun ensureModel(title: String, resetVaeForInpaint: Boolean): Result<Unit> =
+        TODO("unused in queue tests")
+    override suspend fun ensureAdditionalModules(modules: List<String>): Result<Unit> =
+        TODO("unused in queue tests")
+    override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
+        TODO("unused in queue tests")
+    override suspend fun img2img(payload: Map<String, Any?>): Result<List<String>> =
+        TODO("unused in queue tests")
+    override suspend fun progress(): Result<Double> = TODO("unused in queue tests")
+    override suspend fun unloadModel(): Result<Unit> = TODO("unused in queue tests")
+}
+
 /**
  * Local unit tests run against the framework stub android.jar, whose
  * constructors throw, so a [Context] cannot be constructed normally.
@@ -188,6 +228,7 @@ private class FakeQueueDb(
     host: String = "http://127.0.0.1:7860",
     nullState: Boolean = false,
 ) {
+    val gen = FakeGenerationRepository()
     val state = FakeQueueStateDao(
         if (nullState) null else QueueStateEntity(
             running = running,
@@ -227,19 +268,26 @@ class QueueRepositoryTest {
     @get:Rule
     val dispatcherRule = TestDispatcherRule()
 
-    private fun repo(db: FakeQueueDb) =
-        DefaultQueueRepository(stubContext(), db.state, db.jobsDao, db.resultsDao, FakeQueueConnectionRepo(), FakeTx(), db.inputs)
+    private fun repo(db: FakeQueueDb, gen: FakeGenerationRepository = db.gen) =
+        DefaultQueueRepository(stubContext(), db.state, db.jobsDao, db.resultsDao, FakeQueueConnectionRepo(), FakeTx(), db.inputs, gen)
 
     /**
-     * Test double that records worker launches instead of touching WorkManager
-     * (unavailable under local unit tests).
+     * Test double that records worker launches/cancels instead of touching
+     * WorkManager (unavailable under local unit tests).
      */
-    private class LaunchRecordingRepository(db: FakeQueueDb) :
-        DefaultQueueRepository(stubContext(), db.state, db.jobsDao, db.resultsDao, FakeQueueConnectionRepo(), FakeTx(), db.inputs) {
+    private class LaunchRecordingRepository(
+        db: FakeQueueDb,
+        gen: FakeGenerationRepository = db.gen,
+    ) :
+        DefaultQueueRepository(stubContext(), db.state, db.jobsDao, db.resultsDao, FakeQueueConnectionRepo(), FakeTx(), db.inputs, gen) {
         data class Launch(val host: String, val origin: String, val policy: ExistingWorkPolicy)
         val launches = mutableListOf<Launch>()
+        var cancels = 0
         override fun launchWorker(host: String, origin: String, policy: ExistingWorkPolicy) {
             launches += Launch(host, origin, policy)
+        }
+        override fun cancelWork() {
+            cancels++
         }
     }
 
@@ -840,5 +888,78 @@ class QueueRepositoryTest {
         assertEquals(2, snapshot.total)
         // Idle snapshots never expose an executing job.
         assertNull(snapshot.executingJobId)
+    }
+
+    @Test
+    fun `cancel while running interrupts server before clearing the flag`() = runTest {
+        val db = FakeQueueDb(
+            running = true,
+            executingJobId = "1",
+            jobs = listOf(queueJob("1")),
+        )
+        var runningDuringInterrupt: Boolean? = null
+        db.gen.onInterrupt = { runningDuringInterrupt = db.state.get()?.running }
+        val repository = LaunchRecordingRepository(db)
+        repository.cancel()
+
+        assertEquals(1, db.gen.interruptCalls)
+        // interrupt() ran while the flag was still set (before the tx reset).
+        assertEquals(true, runningDuringInterrupt)
+        val saved = db.state.get()!!
+        assertFalse(saved.running)
+        assertNull(saved.executingJobId)
+        assertEquals(1, repository.cancels)
+    }
+
+    @Test
+    fun `cancel swallows interrupt failure but still clears the flag`() = runTest {
+        val db = FakeQueueDb(
+            running = true,
+            executingJobId = "1",
+            jobs = listOf(queueJob("1")),
+        )
+        db.gen.interruptError = java.io.IOException("connection refused")
+        val repository = LaunchRecordingRepository(db)
+        // Must not throw: server already gone is a fine outcome for cancel.
+        repository.cancel()
+
+        assertEquals(1, db.gen.interruptCalls)
+        val saved = db.state.get()!!
+        assertFalse(saved.running)
+        assertNull(saved.executingJobId)
+        assertEquals(1, repository.cancels)
+    }
+
+    @Test
+    fun `cancel while idle skips interrupt`() = runTest {
+        val db = FakeQueueDb(
+            running = false,
+            jobs = listOf(queueJob("1")),
+        )
+        val repository = LaunchRecordingRepository(db)
+        repository.cancel()
+
+        assertEquals(0, db.gen.interruptCalls)
+        assertFalse(db.state.get()!!.running)
+        assertEquals(1, repository.cancels)
+    }
+
+    @Test
+    fun `cancel with hanging interrupt times out and clears the flag`() = runTest {
+        val db = FakeQueueDb(
+            running = true,
+            executingJobId = "1",
+            jobs = listOf(queueJob("1")),
+        )
+        db.gen.hangInterrupt = true
+        val repository = LaunchRecordingRepository(db)
+        // withTimeout(10s) fires on virtual time; cancel must return.
+        repository.cancel()
+
+        assertEquals(1, db.gen.interruptCalls)
+        val saved = db.state.get()!!
+        assertFalse(saved.running)
+        assertNull(saved.executingJobId)
+        assertEquals(1, repository.cancels)
     }
 }

@@ -17,9 +17,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.IOException
 
 private class FakeGenerationRepository : GenerationRepository {
     var loras = listOf(
@@ -57,7 +59,9 @@ private class FakeLoraRepository : LoraRepository {
     }
 }
 
-private class FakePromptDraftRepository : PromptDraftRepository {
+private class FakePromptDraftRepository(
+    var failAppendWith: IOException? = null,
+) : PromptDraftRepository {
     val appended = mutableListOf<Pair<String, String>>()
     private val draft = MutableStateFlow(PromptDraft())
     override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
@@ -65,6 +69,7 @@ private class FakePromptDraftRepository : PromptDraftRepository {
         draft.value = PromptDraft(prompt, negativePrompt)
     }
     override suspend fun appendPrompt(text: String, negativeText: String) {
+        failAppendWith?.let { throw it }
         appended += text to negativeText
         val cur = draft.value
         draft.value = PromptDraft(
@@ -142,5 +147,25 @@ class LoraViewModelTest {
             it is LoraUiState.Success && "other.safetensors" in it.favorites
         } as LoraUiState.Success
         assertTrue("other.safetensors" in state.favorites)
+    }
+
+    @Test
+    fun `insert with storage failure keeps detail and reports notice`() = runTest {
+        val failing = FakePromptDraftRepository(failAppendWith = IOException("disk gone"))
+        val vm = LoraViewModel(
+            SavedStateHandle(), FakeGenerationRepository(), FakeLoraRepository(), failing,
+        )
+        vm.uiState.first { it is LoraUiState.Success && it.items.isNotEmpty() }
+        val item = LoraItem("detail.safetensors", "detail.safetensors", "detail")
+        vm.onAction(LoraAction.ItemClicked(item))
+        vm.uiState.first { it is LoraUiState.Success && it.detail != null }
+        vm.onAction(LoraAction.Insert)
+        val state = vm.uiState.first {
+            it is LoraUiState.Success && it.notice != null
+        } as LoraUiState.Success
+        assertEquals("Insert failed: storage unavailable", state.notice)
+        // Detail stays open so the user can retry.
+        assertNotNull(state.detail)
+        assertTrue(failing.appended.isEmpty())
     }
 }

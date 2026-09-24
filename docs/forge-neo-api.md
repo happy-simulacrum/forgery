@@ -54,7 +54,7 @@
 | Метод + путь | Статус | Комментарий |
 |---|---|---|
 | `GET progress` | ✅ | Caller: `GenerationWorker` (опрос во время генерации). Маппинг: `progressValue()` (`progress`), `images()` (превью), плюс `state`/`eta`/`textinfo` по мере нужды. |
-| `POST interrupt` | ❌ | Прерывает текущую задачу; нужен для кнопки «Stop». |
+| `POST interrupt` | ✅ | Caller: `DefaultGenerationRepository.interrupt` ← `DefaultQueueRepository.cancel`. Маппинг: пустой POST без тела, ответ сырой `ResponseBody` (закрывается caller'ом через `.close()`), результат — `Result<Unit>` (`CancellationException` пробрасывается). |
 | `POST skip` | ❌ | Пропускает текущий шаг/итерацию; нужен для кнопки «Skip» при batch. |
 
 ### Конфиг и флаги

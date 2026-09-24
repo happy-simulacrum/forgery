@@ -9,6 +9,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
@@ -226,7 +227,17 @@ class InpaintViewModel @Inject constructor(
             modelsLoading.value = true
             modelsError.value = null
             when (val r = generationRepository.fetchSdModels()) {
-                is Result.Success -> models.value = r.data
+                is Result.Success -> {
+                    models.value = r.data
+                    val e = editor.value
+                    if (e.modelTitle.isBlank() && e.modelDraft.text.isBlank() && r.data.isNotEmpty()) {
+                        val first = r.data.first()
+                        editor.value = e.copy(
+                            modelDraft = TextFieldValue(first, TextRange(first.length)),
+                            modelTitle = first,
+                        )
+                    }
+                }
                 is Result.Error -> modelsError.value = r.message
                 is Result.Loading -> Unit
             }

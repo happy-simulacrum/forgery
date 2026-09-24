@@ -596,8 +596,10 @@ class GenerateViewModel @Inject constructor(
             val upscalersResult = generationRepository.fetchUpscalers()
             when (modelsResult) {
                 is Result.Success -> {
-                    modelsState.value = modelsState.value.copy(models = modelsResult.data)
-                    engine.value = EngineState.Initialized(modelsResult.data.size)
+                    val data = modelsResult.data
+                    modelsState.value = modelsState.value.copy(models = data)
+                    if (rest.value.modelTitle.isBlank() && data.isNotEmpty()) rest.value = rest.value.copy(modelTitle = data.first())
+                    engine.value = EngineState.Initialized(data.size)
                 }
                 is Result.Error -> {
                     val msg = friendlyNetworkError(modelsResult.message)

@@ -6,6 +6,7 @@ import com.forgery.app.core.model.UiPrefs
 import com.forgery.app.core.network.ForgeApiFactory
 import com.forgery.app.core.network.ForgeHeadersInterceptor
 import com.forgery.app.core.network.ForgeService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +29,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 private class FakeConnectionRepo : ConnectionRepository {
@@ -55,12 +57,15 @@ private class FakeForgeService(
     var optionsBody: String = "{}",
     /** Transport failures to throw from txt2img before succeeding (retry tests). */
     var txtFailures: Int = 0,
+    /** Failure to throw from interrupt() (interrupt tests). */
+    var interruptError: Throwable? = null,
     var schedulers: List<JsonObject> = listOf(
         buildJsonObject { put("name", "karras"); put("label", "Karras") },
     ),
 ) : ForgeService {
     val postedOptions = mutableListOf<JsonObject>()
     var lastTxtBody: JsonObject? = null
+    var interruptCalls = 0
 
     override suspend fun sdModels(): List<JsonObject> =
         listOf(buildJsonObject { put("model_name", "model.safetensors") })
@@ -140,6 +145,12 @@ private class FakeForgeService(
 
     override suspend fun unloadCheckpoint(body: Map<String, String>): JsonObject =
         buildJsonObject {}
+
+    override suspend fun interrupt(): ResponseBody {
+        interruptCalls++
+        interruptError?.let { throw it }
+        return "{}".toResponseBody("application/json".toMediaType())
+    }
 }
 
 class GenerationRepositoryTest {
@@ -431,5 +442,35 @@ class GenerationRepositoryTest {
         assertEquals(1, presets.size)
         assertEquals("s1", presets.first().name)
         assertEquals("best quality", presets.first().prompt)
+    }
+
+    @Test
+    fun `interrupt success`() = runTest {
+        val fake = FakeForgeService()
+        val result = repo(fake).interrupt()
+        assertTrue(result is Result.Success)
+        assertEquals(Unit, (result as Result.Success).data)
+        assertEquals(1, fake.interruptCalls)
+    }
+
+    @Test
+    fun `interrupt error`() = runTest {
+        val fake = FakeForgeService(interruptError = RuntimeException("boom"))
+        val result = repo(fake).interrupt()
+        assertTrue(result is Result.Error)
+        assertEquals("boom", (result as Result.Error).message)
+        assertEquals(1, fake.interruptCalls)
+    }
+
+    @Test
+    fun `interrupt rethrows CancellationException`() = runTest {
+        val fake = FakeForgeService(interruptError = CancellationException("cancelled"))
+        try {
+            repo(fake).interrupt()
+            fail("expected CancellationException")
+        } catch (e: CancellationException) {
+            assertEquals("cancelled", e.message)
+        }
+        assertEquals(1, fake.interruptCalls)
     }
 }

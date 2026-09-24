@@ -11,6 +11,8 @@ import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.core.testing.TestDispatcherRule
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +29,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
+import java.io.IOException
 import java.util.zip.CRC32
 
 private fun chunk(type: String, data: ByteArray): ByteArray {
@@ -91,11 +94,14 @@ private class FakeImageSource(val bytes: ByteArray?) : AnalyzeImageSource {
     override suspend fun read(uri: String): ByteArray? = bytes
 }
 
-private class FakePromptDraftRepository : PromptDraftRepository {
+private class FakePromptDraftRepository(
+    var failSetWith: IOException? = null,
+) : PromptDraftRepository {
     val set = mutableListOf<Pair<String, String>>()
     private val draft = MutableStateFlow(PromptDraft())
     override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
     override suspend fun setPrompt(prompt: String, negativePrompt: String) {
+        failSetWith?.let { throw it }
         set += prompt to negativePrompt
         draft.value = PromptDraft(prompt, negativePrompt)
     }
@@ -382,5 +388,26 @@ class AnalyzeViewModelTest {
         assertNull(cleared.fileInfo)
         assertNull(cleared.uri)
         assertEquals("", cleared.prompt)
+    }
+
+    @Test
+    fun `use again with storage failure reports status and still completes`() = runTest {
+        val failing = FakePromptDraftRepository(failSetWith = IOException("disk gone"))
+        val bytes = pngWithText("a dog\nNegative prompt: ugly\nSteps: 5")
+        val vm = AnalyzeViewModel(
+            SavedStateHandle(), FakeImageSource(bytes), failing, hr, handoff,
+            FakeModelParamsRepository(),
+        )
+        vm.pickAndWait { it.prompt.isNotBlank() }
+        // Subscribe eagerly (Unconfined): copyDone has no replay, a late
+        // subscriber would miss the buffered emission.
+        val done = async(Dispatchers.Unconfined) { vm.copyDone.first() }
+        vm.onAction(AnalyzeAction.UseAgain)
+        // Failure still completes copyDone — the UI must not hang waiting.
+        done.await()
+        val state = vm.uiState.first {
+            it is AnalyzeUiState.Success && it.statusMessage != null
+        } as AnalyzeUiState.Success
+        assertEquals("Copy failed: storage unavailable", state.statusMessage)
     }
 }

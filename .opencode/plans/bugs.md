@@ -1,11 +1,16 @@
-# Bugs — verified 2026-09-24, updated after Critical fix 2026-09-24
+# Bugs — verified 2026-09-24, Critical + High fixed 2026-09-24, deployed + smoke-tested on Pixel 6a
 
 Legend: `[CONFIRMED]` воспроизводится, `[PARTIAL]` частично, `[REJECTED]` нет / уже был исправлен,
 `[FIXED]` исправлено в заходе 2026-09-24, `[DONE]` закрыто. Строки — фактические на момент проверки;
 раздел "После Critical-фикса" фиксирует новый код (Room v4, таблицы очереди).
 Итог проверки: 68/69 подтверждены (включая 4 partial), 1 rejected (H-1).
-Итог после фикса: 4/4 Critical FIXED; из High H-1 REJECTED, H-7 DONE, H-8 PARTIAL, остальные открыты;
-L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed).
+Итог после фикса: 4/4 Critical FIXED; High — H-1 REJECTED, H-2..H-12 FIXED/DONE (H-8 DONE тестами, H-10 только нотификации
+по решению — success() оставлен); L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed).
+Верификация: `./run_tests --rerun-tasks` зеленый; debug APK установлен на Pixel 6a, смок без FATAL в тёмной
+и светлой темах (свитч применяется мгновенно, CFG/GEN читаемы; девайс возвращен в тёмную).
+Single-mode миграция 2026-09-24 (GenerationMode удален, фичи magicprompt/power дропнуты):
+VOID — M-11, M-15, M-16, M-23, L-17, L-18, L-22, L-26; PARTIAL — L-19 (LLM-часть void), M-12/M-21 (части закрыты);
+NEW — L-30 (ModulesRoute.modelTitle). H-3/H-11/H-12 переписаны под single-mode.
 
 ## Critical — ALL FIXED 2026-09-24 (debug собран, стоит на Pixel 6a, смок чистый)
 
@@ -16,56 +21,61 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
   Inpaint file-back: `QueueInputs` (`queue_inputs/<jobId>/`), payload в DB ~1KB, воркер разворачивает в base64
   перед POST (GenerationWorker.kt:176-183), чистка файлов + orphan-sweep. `QueueSnapshot.currentIndex` → `executingJobId`
   (Models.kt), UI/тесты обновлены. Проверено: `./run_tests` зеленые + C-1 тест (20 задач, inputData без payloads).
-- C-2 [FIXED] LoraViewModel.kt `insert()`: `appendPrompt(mode, "$tag $trigger".trim(), "")` — trigger в positive;
-  вес через `Locale.US` (M-21 VM-часть закрыта заодно). Тест поправлен.
+- C-2 [FIXED] LoraViewModel.kt `insert()` (now 130-142): `appendPrompt(positive, "")` где positive = `"$tag $trigger"` —
+  trigger в positive; вес через `Locale.US` (M-21 VM-часть закрыта заодно). Тест поправлен. (Single-mode: сигнатура уже без `mode`.)
 - C-3 [FIXED] GenerationRepository.kt: `catch (CancellationException) { throw e }` перед generic Exception
   во всех 5 местах (call, callGeneration, callWithHost, ensureModel, ensureAdditionalModules).
-- C-4 [FIXED] Handoff: `consume() = getAndUpdate { null }` (атомарно; заодно закрыт L-6),
-  снапшот `parsed` внутри launch, навигация только после `copyDone`, NavHost `popUpTo+launchSingleTop+restoreState`
-  (стек не плодится; заодно закрыта nav-половина L-24). HR-merge вместо overwrite, cfg не трогается (заодно закрыт H-7).
+- C-4 [FIXED] Handoff single-mode: `AnalyzeViewModel.copyTo()` (без `mode`) — снапшот `parsed` внутри launch,
+  `consume() = getAndUpdate { null }` (атомарно; заодно закрыт L-6), навигация только после `copyDone`,
+  NavHost `popUpTo+launchSingleTop+restoreState` (стек не плодится; заодно закрыта nav-половина L-24).
+  HR-merge вместо overwrite: `cur = observeHr().first(); saveHr(cur.copy(...))`, cfg берется из PNG если распарсился
+  (`cfg = s.cfg ?: cur.cfg`), иначе остается текущий. (Уточнение 2026-09-24: «cfg не трогается» из прошлой записи — неточно.)
+  Заодно закрыт H-7.
 
-## High
+## High — ALL FIXED 2026-09-24 (6 параллельных исполнителей, `./run_tests --rerun-tasks` зеленый; деплой ждет девайс)
 
 - H-1 [REJECTED — уже исправлен] GenerationWorker.kt record() lost-update race.
   Переписан 2026-09-24 на новые таблицы (id-based merge: duplicate-check via resultsDao + executingId advance в record);
   гонки нет. Регресс-тест record vs concurrent clear/remove — по-прежнему опционально.
-- H-2 [CONFIRMED] QueueRepository.kt `cancel()` (~413: только `running=false, executingJobId=null` + `cancelUniqueWork`).
-  Методов interrupt/skip нет (ForgeApi.kt:31-82; docs/forge-neo-api.md:57-58 ❌). Текущий txt2img на сервере продолжает считаться.
-  Fix: `POST sdapi/v1/interrupt (+skip)` в ForgeService + `generationRepository.interrupt()` в cancel() (Imp #4).
-- H-3 [CONFIRMED] Displayed model ≠ executed: GenerateScreen.kt:543-544 `selected.ifBlank{options.first()}` (вызов 214-224),
-  GenerateViewModel.kt:462 `ModelChanged→rest`, исполнение `""` = серверный checkpoint (PayloadBuilder.kt:61-63, GenerationRepository.kt:195);
-  InpaintScreen.kt:205-212 тот же fallback, InpaintViewModel.kt:107,159-169,264,280 уходит `modelTitle=""`.
-  Fix: коммитить `models.first()` при загрузке каталога (Imp #7).
-- H-4 [CONFIRMED, обе части] SettingsViewModel.kt:175-185 CHECK: `forgeApiFactory.create(url)` без `cfClientId/Secret`
-  (config 146-147 игнорируется) + затирает глобальный синглтон ForgeHeadersInterceptor (ForgeApi.kt:94-96,155-157).
-  Плюс использован `create` (infinite read) вместо `createControl` — см. M-13.
-  Fix: `createControl(url, cfId, cfSecret)` + per-client интерцепторы (Imp #10).
-- H-5 [CONFIRMED] Gallery deletes не удаляют файлы: GalleryViewModel.kt:119-139 → Repositories.kt:37-38
-  `dao.deleteByIds/clear` (ForgeryDatabase.kt:67-71), `File.delete` нигде нет. Писатель GenerationWorker.kt:312-322 `native_queue`.
-  Примечание 2026-09-24: чистка `queue_inputs/<jobId>` при remove/clear очереди сделана (C-1), но удаление истории
-  по-прежнему оставляет файлы `native_queue` + thumbs навсегда.
-  Fix: SELECT path → File.delete → DAO-delete в транзакции + orphan-sweep (Imp #5).
-- H-6 [CONFIRMED] GalleryViewModel.kt:26,31-34,46-61 page не клампится: дисплей `coerceIn`, источник `page.value` не правится.
-  Сценарий 51→50 айтемов: `observePage(50,50)=[]`, Next/Prev заблокированы — вечная пустая страница. Сброс есть только в All:123.
-  Fix: клампить источник после изменения count + в Selected/Single.
-- H-7 [DONE в заходе C-4, 2026-09-24] Был clobber `saveHr(..., cfg=1.0)` + целостная перезапись.
-  Стало: merge `cur = observeHr(mode).first(); saveHr(cur.copy(...))`, cfg вообще не трогается.
-- H-8 [PARTIAL после C-1, 2026-09-24] JSON-блоб `jobsJson/resultsJson` удален полностью (таблицы); построчный decode
-  (`decodeStrings` в мапперах репозитория, modules/files в воркере) обернут в runCatching → пустой список вместо краша.
-  Осталось: тест на мусор в строке (битая modulesJson/filesJson) + политика лечения битой строки.
-- H-9 [CONFIRMED, структурно] GenerationWorker.kt:187 `CoroutineScope(coroutineContext).launch` — поллер child doWork
-  (переписан, но конструкция та же). progress() обычно не бросает (call ловит Exception),
-  но конструкция хрупкая. Fix: `+SupervisorJob()` + try/catch внутри цикла.
-- H-10 [CONFIRMED] GenerationWorker.kt:128-133 catch-all → `success()` (переписан, конструкция та же): `JobFailedException` от abort + OOM/IO/saveImage/history
-  прячутся от WorkManager (нет failure/retry), нотификация `Batch Complete` vs `Batch Paused` рассинхрон.
-  Fix: неожиданное → failure/retry, success только при чистом выходе.
-- H-11 [CONFIRMED] SettingsScreen.kt:91-100,193-208 мертвые UiPrefs: продюсер есть (`UiPrefsChanged`, saveUiPrefs),
-  консьюмера ноль — MainActivity.kt:13-14 `ForgeryTheme{}` без darkTheme (Theme.kt:28 default true),
-  NavHost.kt:62-69 dests захардкожен, `observeUiPrefs` только в Settings+тестах.
-  Fix: дочитать в MainActivity/NavHost либо удалить секцию (Imp #9).
-- H-12 [CONFIRMED] PromptDraftRepository.kt:65-85,87-95,75-77 uncaught DataStore: голые `first()/edit()` (ForgeryPreferences.kt:192-214
-  без catch). Падает в commitInputs, copyToMode, LoRA/Styles/MagicPrompt; flush в scope без хендлера → краш процесса.
-  Fix: `.catch{emit(PromptDraft())}` + try/catch IOException с ретраем.
+- H-2 [FIXED] Настоящий cancel: `POST sdapi/v1/interrupt` в ForgeService (ResponseBody, закрывает caller),
+  `GenerationRepository.interrupt()` через control-клиент, `QueueRepository.cancel()` — interrupt при running
+  (withTimeout 10s, Timeout глотается, внешняя отмена пробрасывается) → tx-сброс → `cancelWork()` (seam для тестов).
+  `DefaultQueueRepository` получил `generationRepository` в ctor (+ вторичный ctor с Noop для старых тестов).
+  docs/forge-neo-api.md: interrupt ❌→✅. Тесты: interrupt success/error/cancel-проброс; cancel вызывает interrupt
+  до сброса флага, глотает IOException, пропускает при idle, переживает висящий interrupt.
+- H-3 [FIXED] Автокоммит `models.first()` при blank: GEN в `initializeEngine` Success-ветке (guard blank-only, до suspend),
+  INP в `refreshModels` (`modelDraft+modelTitle` атомарно + курсор в конец). UI-фолбэк `ifBlank{first()}` оставлен как safety-net.
+  L-30: навигация уже несла `modelTitle` (`onNavigateToModules: (String) -> Unit`) — не трогали.
+  Тесты: +5 GEN / +4 INP (автокоммит, незатирание выбора/handoff, пустой каталог, исполнение закоммиченного).
+- H-4 [FIXED, full] Per-client interceptors: `ForgeHeadersInterceptor` immutable (vals), `ForgeApiFactory` — кэш
+  `ConcurrentHashMap<Key, Service>` cap 16, свежий OkHttpClient на клиента, `debugLogging` @Volatile, сигнатуры create/createControl те же.
+  CHECK: `createControl(url, cfId, cfSecret)` + `withTimeout(30s)` + хранимый Job (повтор канселит, Dismiss канселит,
+  CancellationException пробрасывается) + тест-шов `checkServiceProvider`. Тесты: creds в createControl, Ok/Failed, отмена.
+- H-5 [FIXED] Удаление файлов: `HistoryDao.getPathsByIds/getAllPaths` (+`HistoryPaths`), `OfflineFirstHistoryRepository`
+  (ctor += Context + QueueTx): SELECT → IO-удаление с префикс-гардом `native_queue` → tx-delete; `sweepOrphanFiles()` с age-gate 20 мин
+  в хвосте delete/clear + фоновый при старте приложения (ForgeryApp, бэклог сирот сносится в первый запуск).
+  VM не тронуты (путь общий). Тесты: новый `OfflineFirstHistoryRepositoryTest` 7/7.
+- H-6 [FIXED] Кламп источника: init-коллектор `count → if (page > max) page = max`; combine-coerce оставлен страховкой.
+  Тест-репро: 120 → стр.2 → удаление хвоста → page=0, items непусты.
+- H-7 [DONE в заходе C-4, 2026-09-24] Был clobber `saveHr(..., cfg=1.0)` + целостная перезапись дефолтами.
+  Стало: merge `cur = observeHr().first(); saveHr(cur.copy(...))`, cfg = из PNG если распарсился (`s.cfg ?: cur.cfg`).
+  (Single-mode: сигнатуры уже без `mode`.)
+- H-8 [DONE 2026-09-24] Новый `QueueDecodeTest` 4/4: мусор/blank в `modulesJson`/`filesJson` → `emptyList` без выброса + валидный контроль.
+  Heal-on-read сознательно не делаем (silent emptyList).
+- H-9 [FIXED] Поллер: `coroutineContext + SupervisorJob()`, тик в try/catch (Cancel → throw, остальное → Log.w),
+  delay с отдельным Cancel-rethrow; `poller.cancel()` в Error-ветке и finally оставлены.
+- H-10 [FIXED по решению «только нотификации», возвраты не меняем] Неожиданный `catch(Exception)` теперь показывает
+  `Batch Paused` (+Log.e) вместо зависшего `Running`; `success()` оставлен сознательно (failure/retry отклонены —
+  риск петли с watchdog). `JobFailedException`-путь без изменений (там уже Paused из abort).
+- H-11 [FIXED, wire] Тема реально переключается: новый `ThemeViewModel` (observeUiPrefs → StateFlow),
+  MainActivity `ForgeryTheme(darkTheme = ui.darkTheme)`; `UiPrefsChanged` персистит мгновенно без SAVE;
+  `isDirty` больше не учитывает `draftUi` (был вечно горящий SAVE); убран дублированный import. Вспышка для светлых принята.
+  Тесты: новый `ThemeViewModelTest` 3/3, Settings 10/10 (CHECK creds/Ok/Failed/отмены).
+  Смок на Pixel 6a: свитч в CFG переключает мгновенно без SAVE, CFG/GEN в светлой читаемы, 0 FATAL.
+- H-12 [FIXED] Черновики стойкие: `.catch{IOException → empty}` на чтениях префов (draft/hr/defaults/modules);
+  `appendPrompt` try/catch + 1 ретрай, `flush` не чистит pending при ошибке + bounded retry (2), scope-хендлер от uncaught;
+  коллеры Analyze/LoRA/Styles — runCatching с честными нотисами (`copyDone` эмитится и при фейле — UI не виснет,
+  детали LoRA остаются открыты). Тесты: PromptDraftRepository 7/7 + VM-кейсы IOException.
 
 ## Medium (24)
 
@@ -94,17 +104,17 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
   конкурентные запросы перекрывают creds. Fix: per-baseUrl+creds кэш с собственным интерцептором (Imp #10).
 - M-10 [CONFIRMED] SettingsViewModel.kt:63-66 ConfigChanged пересоздает texts из коммиченного config, остальные 67-111 via buffered().
   Триггеры SettingsScreen.kt:109,117,172. Набрал IP, ткнул toggle — ввод потерян. Fix: `draft.value?.texts ?: from(...)` или commitDraft перед применением.
-- M-11 [CONFIRMED] SettingsViewModel.kt:36-50 draft shadows external (`draftValue?.config ?: stored`) + 152-165 save полным снапшотом
-  incl. llmKey/llmModel (Models.kt:23-24), писатель MagicpromptViewModel.kt:147-151. Сценарий затирания ключа. Fix: rebase на save (merge только редактируемых).
-- M-12 [CONFIRMED] ForgeryPreferences.kt:137 `IS_CONFIGURED=true` вместо `config.isConfigured`; MagicpromptViewModel.kt:150
-  побочно маркирует configured; GenerateViewModel.kt:218-219 boot завязан на флаг. Fix: `e[IS_CONFIGURED]=config.isConfigured`.
+- M-11 [VOID 2026-09-24] Фича magicprompt дропнута целиком (`feature/magicprompt` отсутствует, `llmKey/llmModel` удалены
+  из `ConnectionConfig`): сценарий затирания ключа не существует. Draft-shadow половина (draft vs external writes в Settings)
+  при необходимости заведется отдельным пунктом.
+- M-12 [CONFIRMED] ForgeryPreferences `saveConnection` force `IS_CONFIGURED=true` вместо `config.isConfigured`
+  (перепроверено после миграции; magicprompt-писатель дропнут вместе с фичей).
 - M-13 [CONFIRMED] SettingsViewModel.kt:179 CHECK через generation client infinite read (ForgeApi.kt:167-168,135-141);
   job не хранится, Dismiss не канселит, CF не передаются. Fix: createControl + withTimeout(30s) + хранимый Job (Imp #10).
 - M-14 [CONFIRMED] MainActivity.kt:10-17 POST_NOTIFICATIONS не запрашивается (манифест:11 объявлен, grep RequestPermission — только манифест+bugs).
   GenerationWorker.kt foreground (~348-376); targetSdk 35, API 33+ режет без рантайма. Fix: RequestPermission в onCreate (Imp #4).
-- M-15 [CONFIRMED] PowerViewModel.kt:54-68 busy без try/finally → исключение/cancel = busy навсегда, кнопки PowerScreen.kt:74,79,92,95 мертвы.
-  Fix: try/finally.
-- M-16 [CONFIRMED] PowerScreen.kt:77-81 KILL! напрямую → PowerAction.Kill → powerOff (VM:42), без AlertDialog. Fix: confirmKill диалог (Imp #17).
+- M-15 [VOID 2026-09-24] Фича power дропнута (`feature/power` отсутствует).
+- M-16 [VOID 2026-09-24] Фича power дропнута (KILL-подтверждение не к чему применять).
 - M-17 [CONFIRMED] ModulesViewModel.kt:102-108 toggle read-modify-write без мьютекса (Clear 76-78 то же). Дабл-тап = потеря.
   Fix: Mutex или атомарный edit в репозитории.
 - M-18 [CONFIRMED] AnalyzeViewModel.kt:90-110 concurrent analyze(): новый launch без Job/cancel; побеждает последний завершившийся,
@@ -119,8 +129,7 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
   Fix: `Locale.US` + тест с GERMANY (Imp #6).
 - M-22 [CONFIRMED] GalleryFiles.kt:27-33 insert row затем copy без `delete(uri)` на ошибке + без IS_PENDING → ghost 0-байт записи.
   Fix: try/catch delete + IS_PENDING 1→0 (Imp #18).
-- M-23 [CONFIRMED] MagicpromptScreen.kt:75 внешний Column без scroll; 124-146 Card, 128-129 Text scroll+weight(fill=false),
-  кнопки 131-143 ниже текста → длинный вывод уводит кнопки за экран. Fix: внешний verticalScroll или зафиксировать Card.
+- M-23 [VOID 2026-09-24] Фича magicprompt дропнута (`feature/magicprompt` отсутствует).
 - M-24 [CONFIRMED] GenerationRepository.kt:79-80 @Volatile кэш + 236-238 early-return без GET после рестарта сервера (global сброшен,
   кейс 38-43 темные картинки/VAE leak); проверка current==want 245-249 не выполняется. Fix: всегда GET options + сравнение.
 
@@ -169,20 +178,16 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
   Fix: detailJob?.cancel + requestedId guard + dismiss с cancel.
 - L-16 [CONFIRMED] LoraViewModel.kt:126 `substringBeforeLast('.', item.name)`: path без расширения теряет директорию,
   `a.b/c` режется до `a`. Бьет в GenerationRepository.kt:176 file=. Fix: резать расширение только в basename.
-- L-17 [CONFIRMED x2] MagicpromptViewModel.kt:147-152 persist берет кэш `busy.config` (83-94), до первой эмиссии silent return —
-  набранные key/model теряются; 86-91,137 неявно пишет глобальный ConnectionRepository (Repositories.kt:56→Preferences 122-139 + force configured).
-  Fix: `observe().first()` в persist + явный Save; LLM вынести из ConnectionConfig.
-- L-18 [CONFIRMED] MagicpromptScreen.kt:99-105 ключ plaintext: нет visualTransformation/Password keyboard/toggle. Fix: PasswordVisualTransformation + eye-toggle.
-- L-19 [CONFIRMED x2] ForgeryPreferences.kt:161-176 resetConnection не чистит LLM_KEY/MODEL (56-57), хотя save 135-136 их пишет;
-  SettingsScreen.kt:234-237 RESET без confirm (VM 167-173 необратимо). Fix: чистить LLM + AlertDialog.
+- L-17 [VOID 2026-09-24] Фича magicprompt дропнута.
+- L-18 [VOID 2026-09-24] Фича magicprompt дропнута.
+- L-19 [PARTIAL 2026-09-24] LLM-половина VOID (ключей нет, чистить нечего); осталась confirm-половина:
+  SettingsScreen.kt:194-196 RESET без confirm (VM reset необратимо). Fix: AlertDialog.
 - L-20 [CONFIRMED x2] SettingsViewModel.kt:134-150 commitDraft verbatim без trim/валидации (Models.kt:27-29 режет только trailing /;
   пробелы → `http:// 192...`); parsePort 222-223 filter+take(5)+coerce молча оставляет старый/клампит без фидбека.
   Fix: trim+inline error; порты — surface error/блок SAVE.
 - L-21 [CONFIRMED] SettingsViewModel.kt:152-165 save vs 167-173 reset без Mutex/single-flight; UI 234-243 RESET не блокируется isSaving;
   два SAVE = две корутины со stale-снимком; reset→опоздавший save = resurrect. Fix: общий Mutex + перечитывать draft внутри + дизейбл RESET.
-- L-22 [CONFIRMED, номера уточнены: onAction 40-52, run 54-68] Power double-tap (каждый тап отдельная корутина, busy только после рекомпозиции;
-  чужой false гасит чужой in-flight + нет finally M-15); PowerScreen.kt:69 hardcoded `:5000`; onBackClick 45-57 принимается, в PowerContent 60-64 нет.
-  Fix: guard/Mutex+finally; порт из конфига; убрать или прокинуть onBackClick.
+- L-22 [VOID 2026-09-24] Фича power дропнута целиком.
 - L-23 [CONFIRMED] ComfyViewModel.kt:13-27,35-37 TODO + fake `listOf("Item 1","Item 2")`; NavHost без import/comfyScreen (граф 121-152),
   хотя settings.gradle 56-57 + app deps 80 тянут вес; `ComfyRoute(id)` тоже мертв. Fix: допилить+зарегистрировать либо удалить модули.
 - L-24 [PARTIAL после C-4, 2026-09-24] Навигация FIXED: analyze→generate идет с popUpTo+singleTop+restoreState после
@@ -190,8 +195,12 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
   Fix: удалить поля.
 - L-25 [CONFIRMED] ModulesScreen.kt:150-153 REFRESH (+117 RETRY) без `enabled=!listLoading` (флаг UiState:16, индикатор 101-103);
   VM 82-100 без guard — параллельные fetch + конкурирующий prune 90-93. Fix: enabled + single-flight.
-- L-26 [CONFIRMED] LoraViewModel.kt:32-34 `runCatching{valueOf}?:SDXL` молча (тот же паттерн ModulesVM 34-36, MagicpromptVM 33, StylesVM 30,
-  Preferences 208). Fix: parseModeOrNull + лог/Error-state.
+- L-26 [VOID 2026-09-24] Mode-аргументов больше нет (`LoraRoute` — data object без args, `GenerationMode` удален):
+  тихому фолбэку не на чем срабатывать.
+- L-30 [NEW 2026-09-24, CONFIRMED] `ModulesRoute.modelTitle` всегда `""`: GEN/INP зовут `navigate(ModulesRoute())` с дефолтом
+  (`onNavigateToModules: () -> Unit`), `ModulesViewModel` читает `toRoute<ModulesRoute>().modelTitle` → blank → per-model
+  селекция не ключуется (спасает только глобальный mirror `modulesSelection`). Связано с H-3.
+  Fix: пробросить текущий `modelTitle` из GEN/INP (поменять колбэк на `(String) -> Unit`).
 - L-27 [CONFIRMED, Low] PromptDraftRepository.kt:48 plain var flushJob + 79-85 cancel+launch неатомарны (set/append suspend из разных корутин;
   flush 87-95/94 смягчает — двойные записи, не потеря). Fix: Mutex/actor.
 - L-28 [CONFIRMED x2] ForgeApi.kt:116 plain debugLogging читается раз в lazy 123-128 (App:28-30 выставляет до create, но видимость не гарантирована;
@@ -203,32 +212,39 @@ L-2 PARTIAL (off-by-one fixed), L-6 DONE, L-24 PARTIAL (навигация fixed
 
 ## Improvements (18)
 
-1. [APPLICABLE] safeApiCall единый — нет (grep только bugs.md); разрозненные catch глотают Cancel (C-3; MagicPowerRepositories 47,74; SettingsVM 182).
+1. [APPLICABLE] safeApiCall единый — нет (grep только bugs.md); C-3 закрыт явными rethrow, остался голый catch в SettingsVM CHECK
+  (чинится в H-4). (MagicPowerRepositories дропнуты вместе с power.)
 2. [DONE 2026-09-24] KEY_JOBS удален полностью: `launchWorker(host, origin)` + watchdog только host/origin;
   список живет в Room-таблицах, воркер читает next-pending построчно. C-1 тест (20 задач) в QueueRepositoryTest.
 3. [DONE] Сериализация мутаций очереди — QueueTx (db.withTransaction) + tx.run везде (stage 216, start 268, enqueue 314, remove 393, move 429,
    cancel 464, clearCompleted 471, clearPending 506; worker record 212-234, persist 250-252; id-based withResult 54-71).
-4. [APPLICABLE] Настоящий cancel + actions + permission — interrupt 0, нотификация 298-314 без addAction/ongoing, permission в манифесте:11 без запроса (MainActivity 10-16).
-5. [APPLICABLE] Удалять файлы + sweep — delete=DAO-only (Repositories 37-38), grep File.delete/orphan 0, writer native_queue (worker 256-264).
+4. [PARTIAL 2026-09-24] Cancel: interrupt + вызов в cancel() DONE (H-2); осталось: notification action (Cancel/Stop),
+  runtime POST_NOTIFICATIONS permission (M-14 открыт).
+5. [DONE 2026-09-24] Удалять файлы + sweep (H-5): SELECT paths → IO с гардом → tx-delete; sweepOrphanFiles (age-gate 20 мин)
+  в хвосте delete/clear + стартовый в ForgeryApp.
 6. [PARTIAL 2026-09-24] LoRA пакет: positive (DONE) + Locale.US в insert (DONE, M-21 VM-часть); осталось: key/fav by path
   (сейчас key/fav по name) + Locale.US в display LoraScreen:146.
-7. [PARTIAL] Коммитить модель — Generate коммитит сразу (VM:462, Screen:218, buildJob 603-612 из rest 380-404) OK; Inpaint расходится (Screen:208 vs VM:164,264,280).
+7. [DONE 2026-09-24] Коммитить отображаемую модель (H-3): автокоммит `models.first()` при blank в GEN initializeEngine
+  и INP refreshModels (+ тесты исполнения закоммиченного).
 8. [APPLICABLE] Submit guards + snackbar — нет isSubmitting (GEN 616-664, INP 239-295), кнопки всегда enabled (Screen 502-520), SnackbarHost только GalleryDetail 108.
-9. [APPLICABLE] UiPrefs/LLM — секция wired но мертва (см. H-11), LLM в ConnectionConfig (Models 23-24, prefs 103-139), reset LLM не трогает (161-176).
-10. [PARTIAL] CHECK/interceptors/кэш — разделение generation/control сделано (ForgeApi 136-153), не сделано: singleton-мутация (94-105,155-157, M-9),
-    новый Retrofit per call без кэша (155-165), CHECK не по ТЗ (SettingsVM 175-186), debugLogging разовый (116-128).
+9. [DONE 2026-09-24] UiPrefs wire (H-11): ThemeViewModel + мгновенное применение темы; TABS/LLM отсутствуют после миграции.
+10. [DONE 2026-09-24] CHECK via createControl + CF + timeout + Job; per-client immutable interceptors + Retrofit-кэш (cap 16);
+  debugLogging @Volatile (H-4 full, закрывает и M-9/M-13).
 11. [APPLICABLE] Маска — letterbox-баг (M-4), жесты ручные 326-353 (не awaitEachGesture), activeStroke leak + in-memory only (L-9).
-12. [APPLICABLE] Room — exportSchema=false (DB:119), без индекса createdAt (Entity 15-23), paging limit/offset 55-56 (не Paging3),
-    importFromServer цикл без транзакции (LoraStyleRepositories 52-60).
+12. [PARTIAL 2026-09-24] Room: очередь нормализована (queue_jobs + индекс sortOrder, queue_results) DONE;
+  осталось: exportSchema, индекс history.createdAt, Paging 3, транзакция importFromServer.
 13. [APPLICABLE] PNG inflate + тесты — single inflate (56-72,88-95; M-8), тесты только tEXt/parseA1111 (PngMetadataTest 46-144), zTXt/iTXt нет.
-14. [APPLICABLE] Тесты — 24 файла, есть Queue/GenerationRepo/PngMetadata, нет GenerationWorker/Watchdog; parseSeed/parseSize (Inputs 38-54) непокрыты
-    (TextFieldFilterTest только filterDigits); seed round-trip нет.
+14. [PARTIAL 2026-09-24] Тесты: добавились QueueDecodeTest, OfflineFirstHistoryRepositoryTest, ThemeViewModelTest,
+  CHECK/interrupt/cancel/autocommit/decode кейсы; по-прежнему нет GenerationWorker/Watchdog worker-тестов;
+  parseSeed/parseSize непокрыты; seed round-trip нет.
 15. [PARTIAL 2026-09-24] Навигация: analyze→generate теперь popUpTo+singleTop+restoreState (DONE в C-4);
   осталось: единые tab options для остальных cross-feature + убрать мёртвые route-аргументы/onBackClick
   (GenerateRoute(id), GalleryRoute(id) + хелперы; NavHost onBackClick={} для 5 табов).
-16. [APPLICABLE] Мертвый код — ничего не удалено: QueueService (+манифест:29), ForgeryDispatchers (Common 8-12), PrefsKeys MODEL/PROMPT/NEG_INP
-    (45,49,53; используются только 3 мода 180-190), Result.Loading (~20 ветвлений), observeDetail default (Repositories:17), comfy/*.
-17. [PARTIAL] Подтверждения — нет: KILL (Power 77-82), RESET (Settings 234-237), DEL (Styles:115), DONE без диалога (Queue 380-385 vs диалог 404-426 только pending);
+16. [APPLICABLE] Мертвый код: QueueService (+манифест), ForgeryDispatchers, `PrefsKeys.*_INP` (самозакрылись миграцией — 0 hits),
+  зато новые сироты от single-mode: `DEF_MODEL/DEF_SAMPLER/DEF_SCHED/DEF_UPSCALER` в ForgeryPreferences (не читаются),
+  Result.Loading (~20 ветвлений), observeDetail default, Comfy (deferred).
+17. [PARTIAL] Подтверждения — нет: RESET (Settings ~194-196), DEL (Styles:115), DONE без диалога (QueueScreen vs диалог только pending);
+  KILL-часть VOID (power дропнут);
     есть: Gallery 156-172 + VM 104-142, Generate unload 484-499.
 18. [APPLICABLE] Галерея — без IS_PENDING (Files 21-30; M-22), хардкод Forgery_*.png/image/png (22-24, share 45), AsyncImage без placeholder/error
     (Gallery 108-111, Inpaint 317-322), empty state нет (пустой грид + Page 1/1 vs Queue:387, Modules:123).

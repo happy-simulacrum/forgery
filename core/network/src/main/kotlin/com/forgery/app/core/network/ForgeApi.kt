@@ -13,6 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
+import java.util.concurrent.ConcurrentHashMap
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -73,6 +74,14 @@ interface ForgeService {
     @POST("sdapi/v1/unload-checkpoint")
     suspend fun unloadCheckpoint(@Body body: Map<String, String>): JsonObject
 
+    /**
+     * Interrupts the current server-side task (empty POST, no payload).
+     * Neo answers with an empty body — hence raw [ResponseBody]
+     * (closed by callers) instead of [JsonObject], like [setOptions].
+     */
+    @POST("sdapi/v1/interrupt")
+    suspend fun interrupt(): ResponseBody
+
     @GET("sdapi/v1/prompt-styles")
     suspend fun promptStyles(): List<JsonObject>
 
@@ -90,10 +99,20 @@ fun JsonObject.images(): List<String> =
 fun JsonObject.progressValue(): Double =
     this["progress"]?.jsonPrimitive?.doubleOrNull ?: 0.0
 
-/** Cloudflare Access + ngrok headers, mirrors network.js Cloudflare inject. */
-class ForgeHeadersInterceptor @Inject constructor() : Interceptor {
-    @Volatile var cfClientId: String = ""
-    @Volatile var cfClientSecret: String = ""
+/**
+ * Cloudflare Access + ngrok headers, mirrors network.js Cloudflare inject.
+ *
+ * Immutable per-client instance: CF credentials are constructor vals, so
+ * concurrent clients for different hosts/credentials never overwrite each
+ * other (was: shared @Volatile vars rewritten before every create() call).
+ */
+class ForgeHeadersInterceptor(
+    private val cfClientId: String,
+    private val cfClientSecret: String,
+) : Interceptor {
+    /** Hilt entry point: default (credential-less) instance. */
+    @Inject constructor() : this("", "")
+
     override fun intercept(chain: Interceptor.Chain) = chain.proceed(
         chain.request().newBuilder()
             .addHeader("ngrok-skip-browser-warning", "true")
@@ -106,19 +125,23 @@ class ForgeHeadersInterceptor @Inject constructor() : Interceptor {
 
 @Singleton
 class ForgeApiFactory @Inject constructor(
-    private val headers: ForgeHeadersInterceptor,
+    /**
+     * Retained for injection compatibility; services now build their own
+     * per-client interceptors (see [serviceFor]) instead of sharing this.
+     */
+    @Suppress("unused") private val headers: ForgeHeadersInterceptor,
 ) {
     /**
      * Set from [com.forgery.app.app.ForgeryApp] based on the debuggable flag:
      * HTTP logging rides into release builds otherwise (this module has no
      * BuildConfig / debug source set). Defaults to true = historic behavior.
      */
-    var debugLogging: Boolean = true
+    @Volatile var debugLogging: Boolean = true
 
     /**
-     * Shared clients (was: a new OkHttpClient per [create] call — a fresh
-     * connection pool + dispatcher per request, amplifying server backlog
-     * pressure while the Neo server is stuck in a model reload).
+     * Shared logging interceptor (stateless apart from its level, fixed at
+     * first use from [debugLogging], which ForgeryApp sets before any
+     * create() call).
      */
     private val logging: HttpLoggingInterceptor by lazy {
         HttpLoggingInterceptor().setLevel(
@@ -127,49 +150,77 @@ class ForgeApiFactory @Inject constructor(
         )
     }
 
-    private fun baseBuilder() = OkHttpClient.Builder()
-        .addInterceptor(headers)
+    /**
+     * Per-client service cache keyed by (baseUrl, CF creds, control flag).
+     * Each entry owns its OkHttpClient + interceptor, so concurrent requests
+     * against different hosts/credentials can't overwrite each other's
+     * headers (was: one shared interceptor mutated before every create()
+     * call, plus a fresh Retrofit per call without any cache).
+     */
+    private data class ClientKey(
+        val baseUrl: String,
+        val cfClientId: String,
+        val cfClientSecret: String,
+        val control: Boolean,
+    )
+
+    private val services = ConcurrentHashMap<ClientKey, ForgeService>()
+
+    companion object {
+        /** Bounds connection-pool/dispatcher growth; oldest-approximate entry evicted. */
+        private const val MAX_CACHED_SERVICES = 16
+    }
+
+    /** Fresh builder per client: never shares an interceptor between services. */
+    private fun baseBuilder(cfClientId: String, cfClientSecret: String) = OkHttpClient.Builder()
+        .addInterceptor(ForgeHeadersInterceptor(cfClientId, cfClientSecret))
         .addInterceptor(logging)
         .retryOnConnectionFailure(true)
 
     /** Generation client: infinite read — txt2img/img2img may run for minutes. */
-    private val generationClient: OkHttpClient by lazy {
-        baseBuilder()
+    private fun generationClient(cfClientId: String, cfClientSecret: String): OkHttpClient =
+        baseBuilder(cfClientId, cfClientSecret)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
             .build()
-    }
 
     /**
      * Control-plane client: short timeouts for options/progress/catalog.
      * A blocked Neo server (mid-reload) must fail fast here instead of
      * burning the 15s connect budget on every poll iteration.
      */
-    private val controlClient: OkHttpClient by lazy {
-        baseBuilder()
+    private fun controlClient(cfClientId: String, cfClientSecret: String): OkHttpClient =
+        baseBuilder(cfClientId, cfClientSecret)
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .build()
-    }
 
-    private fun serviceFor(baseUrl: String, cfClientId: String, cfClientSecret: String, client: OkHttpClient): ForgeService {
-        headers.cfClientId = cfClientId
-        headers.cfClientSecret = cfClientSecret
+    private fun serviceFor(baseUrl: String, cfClientId: String, cfClientSecret: String, control: Boolean): ForgeService {
         val url = baseUrl.trimEnd('/') + "/"
-        return Retrofit.Builder()
+        val key = ClientKey(url, cfClientId, cfClientSecret, control)
+        services[key]?.let { return it }
+        val client = if (control) controlClient(cfClientId, cfClientSecret)
+        else generationClient(cfClientId, cfClientSecret)
+        val service = Retrofit.Builder()
             .baseUrl(url)
             .client(client)
             .addConverterFactory(ForgeJson.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(ForgeService::class.java)
+        if (services.size >= MAX_CACHED_SERVICES) {
+            // ConcurrentHashMap has no insertion order — evict an arbitrary
+            // (oldest-approximate) entry to bound pool/dispatcher growth.
+            services.keys.firstOrNull()?.let { services.remove(it) }
+        }
+        return services.putIfAbsent(key, service) ?: service
     }
 
     fun create(baseUrl: String, cfClientId: String = "", cfClientSecret: String = ""): ForgeService =
-        serviceFor(baseUrl, cfClientId, cfClientSecret, generationClient)
+        serviceFor(baseUrl, cfClientId, cfClientSecret, control = false)
 
     /** Short-timeout variant for control-plane calls (options/progress/catalog). */
     fun createControl(baseUrl: String, cfClientId: String = "", cfClientSecret: String = ""): ForgeService =
-        serviceFor(baseUrl, cfClientId, cfClientSecret, controlClient)
+        serviceFor(baseUrl, cfClientId, cfClientSecret, control = true)
 
     /** Applies Neo sanitizer to a txt2img/img2img payload copy. */
     fun sanitized(payload: Map<String, Any?>): Map<String, Any?> {

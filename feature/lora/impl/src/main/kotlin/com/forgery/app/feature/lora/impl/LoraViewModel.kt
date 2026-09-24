@@ -10,12 +10,14 @@ import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.model.LoraItem
 import com.forgery.app.core.model.LoraMeta
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.IOException
 import java.util.Locale
 import javax.inject.Inject
 
@@ -135,7 +137,16 @@ class LoraViewModel @Inject constructor(
             val tag = "<lora:$key:$weight>"
             val trigger = d.meta.trigger.trim()
             val positive = if (trigger.isBlank()) tag else "$tag $trigger"
-            promptDrafts.appendPrompt(positive, "")
+            // Memory is the source of truth, disk is best-effort: on storage
+            // failure keep the detail open so the user can retry.
+            try {
+                promptDrafts.appendPrompt(positive, "")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                notice.value = "Insert failed: storage unavailable"
+                return@launch
+            }
             detail.value = null
             notice.value = "Inserted $tag"
         }

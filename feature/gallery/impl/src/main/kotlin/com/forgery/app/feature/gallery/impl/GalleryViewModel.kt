@@ -65,6 +65,19 @@ class GalleryViewModel @Inject constructor(
         initialValue = GalleryUiState.Loading,
     )
 
+    init {
+        // H-6: clamp the page *source* when the total shrinks underneath us
+        // (e.g. external tail deletion). The display coerceIn above is not
+        // enough: page.value stays out of range, observePage keeps serving an
+        // empty page and Next/Prev stay blocked forever.
+        viewModelScope.launch {
+            historyRepository.count().collect { total ->
+                val max = maxOf(0, (total + PAGE_SIZE - 1) / PAGE_SIZE - 1)
+                if (page.value > max) page.value = max
+            }
+        }
+    }
+
     fun onAction(action: GalleryAction) {
         val current = (uiState.value as? GalleryUiState.Success) ?: run {
             // Allow page nav even before first emission? No — need bounds; ignore.

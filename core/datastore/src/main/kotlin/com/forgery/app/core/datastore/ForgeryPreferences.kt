@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -16,10 +17,12 @@ import com.forgery.app.core.model.ModelLastUsed
 import com.forgery.app.core.model.PromptDraft
 import com.forgery.app.core.model.UiPrefs
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -111,7 +114,9 @@ class ForgeryPreferencesDataSource @Inject constructor(
     // -- prompt draft (shared GEN/INP <-> LoRA/Styles) --
 
     fun observePromptDraft(): Flow<PromptDraft> =
-        dataStore.data.map { p ->
+        dataStore.data.catch { e ->
+            if (e is IOException) emit(emptyPreferences()) else throw e
+        }.map { p ->
             PromptDraft(
                 prompt = p[PrefsKeys.PROMPT].orEmpty(),
                 negativePrompt = p[PrefsKeys.NEG].orEmpty(),
@@ -130,7 +135,9 @@ class ForgeryPreferencesDataSource @Inject constructor(
 
     // -- Hi-Res Fix (legacy bojro_hr_* keys) --
 
-    fun observeHr(): Flow<HrSettings> = dataStore.data.map { p ->
+    fun observeHr(): Flow<HrSettings> = dataStore.data.catch { e ->
+        if (e is IOException) emit(emptyPreferences()) else throw e
+    }.map { p ->
         val d = HrSettings()
         HrSettings(
             enable = p[PrefsKeys.HR_ENABLE] ?: d.enable,
@@ -160,7 +167,9 @@ class ForgeryPreferencesDataSource @Inject constructor(
         DefaultField.NEGATIVE -> PrefsKeys.DEF_NEG
     }
 
-    fun observeDefaults(): Flow<GenDefaults> = dataStore.data.map { p ->
+    fun observeDefaults(): Flow<GenDefaults> = dataStore.data.catch { e ->
+        if (e is IOException) emit(emptyPreferences()) else throw e
+    }.map { p ->
         GenDefaults(
             prompt = p[PrefsKeys.DEF_PROMPT].orEmpty(),
             negativePrompt = p[PrefsKeys.DEF_NEG].orEmpty(),
@@ -209,7 +218,9 @@ class ForgeryPreferencesDataSource @Inject constructor(
 
     /** Sorted for UI/selection stability (DataStore sets are unordered). */
     fun observeModules(): Flow<List<String>> =
-        dataStore.data.map { p -> (p[PrefsKeys.MODULES] ?: emptySet()).sorted() }
+        dataStore.data.catch { e ->
+            if (e is IOException) emit(emptyPreferences()) else throw e
+        }.map { p -> (p[PrefsKeys.MODULES] ?: emptySet()).sorted() }
 
     suspend fun saveModules(modules: List<String>) {
         dataStore.edit { e -> e[PrefsKeys.MODULES] = modules.toSet() }

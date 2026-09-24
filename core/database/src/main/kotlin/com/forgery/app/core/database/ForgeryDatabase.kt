@@ -71,6 +71,12 @@ data class QueueResultEntity(
     val error: String? = null,
 )
 
+/** Lightweight row for gallery file cleanup — avoids loading full entities. */
+data class HistoryPaths(
+    val imagePath: String,
+    val thumbPath: String?,
+)
+
 @Dao
 interface HistoryDao {
     @Query("SELECT * FROM history ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
@@ -94,6 +100,12 @@ interface HistoryDao {
 
     @Query("DELETE FROM history")
     suspend fun clear()
+
+    @Query("SELECT imagePath, thumbPath FROM history WHERE id IN (:ids)")
+    suspend fun getPathsByIds(ids: List<Long>): List<HistoryPaths>
+
+    @Query("SELECT imagePath, thumbPath FROM history")
+    suspend fun getAllPaths(): List<HistoryPaths>
 }
 
 @Dao

@@ -29,6 +29,7 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -129,6 +130,8 @@ class GenerationWorker @AssistedInject constructor(
             persistRunningFlag(false)
             throw e
         } catch (e: Exception) {
+            try { updateProgress("Batch Paused", "Queue failed: ${e.message}", 100) } catch (_: Exception) { }
+            Log.e(QueueLogTag, "queue failed", e)
             persistRunningFlag(false)
             WorkResult.success()
         } finally {
@@ -184,19 +187,29 @@ class GenerationWorker @AssistedInject constructor(
             // Progress poller, best-effort (legacy: 3s interval thread).
             // Single-column atomic update: never reads the row, so it cannot
             // resurrect jobs dropped by a concurrent clear.
-            val poller = kotlinx.coroutines.CoroutineScope(coroutineContext).launch {
+            val poller = kotlinx.coroutines.CoroutineScope(coroutineContext + SupervisorJob()).launch {
                 while (isActive) {
-                    val p = (generationRepository.progress()
-                        as? ForgeResult.Success)?.data ?: 0.0
-                    if (p > 0) {
-                        updateProgress(
-                            "Batch Running",
-                            "Job $labelIndex/$labelTotal: ${(p * 100).toInt()}%",
-                            batchPct(p.toFloat()),
-                        )
-                        queueDao.updateJobProgress(p.toFloat().coerceIn(0f, 1f))
+                    try {
+                        val p = (generationRepository.progress()
+                            as? ForgeResult.Success)?.data ?: 0.0
+                        if (p > 0) {
+                            updateProgress(
+                                "Batch Running",
+                                "Job $labelIndex/$labelTotal: ${(p * 100).toInt()}%",
+                                batchPct(p.toFloat()),
+                            )
+                            queueDao.updateJobProgress(p.toFloat().coerceIn(0f, 1f))
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(QueueLogTag, "poller tick skipped", e)
                     }
-                    kotlinx.coroutines.delay(3_000)
+                    try {
+                        kotlinx.coroutines.delay(3_000)
+                    } catch (e: CancellationException) {
+                        throw e
+                    }
                 }
             }
             val images: List<String>

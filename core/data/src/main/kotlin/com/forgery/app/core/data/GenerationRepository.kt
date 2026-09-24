@@ -47,6 +47,14 @@ interface GenerationRepository {
     suspend fun img2img(payload: Map<String, Any?>): Result<List<String>>
     suspend fun progress(): Result<Double>
     suspend fun unloadModel(): Result<Unit>
+    /**
+     * Interrupts the current server-side task (`POST /interrupt`).
+     * Source-compatibility default: external fakes keep compiling;
+     * the real backend overrides it below.
+     */
+    suspend fun interrupt(): Result<Unit> {
+        return Result.Error("interrupt not supported")
+    }
 
     companion object {
         const val MODEL_ALIGN_ATTEMPTS = 40
@@ -301,6 +309,14 @@ class DefaultGenerationRepository @Inject constructor(
             is Result.Error -> Result.Error(r.message, r.cause)
             is Result.Loading -> Result.Loading
         }
+
+    /**
+     * H-2 real cancel: empty POST /interrupt via the control client.
+     * Raw [ResponseBody] closed by the caller, like [unloadModel]'s
+     * setOptions flow; [CancellationException] rethrown by [call].
+     */
+    override suspend fun interrupt(): Result<Unit> =
+        call { api -> api.interrupt().close() }
 }
 
 /** Reads a JSON string-array option (e.g. Neo `forge_additional_modules`); missing -> empty. */

@@ -14,8 +14,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.IOException
 
 private class FakeStyleRepository(
     initial: List<StylePreset> = listOf(
@@ -40,7 +42,9 @@ private class FakeStyleRepository(
     }
 }
 
-private class FakePromptDraftRepository : PromptDraftRepository {
+private class FakePromptDraftRepository(
+    var failAppendWith: IOException? = null,
+) : PromptDraftRepository {
     val appended = mutableListOf<Pair<String, String>>()
     private val draft = MutableStateFlow(PromptDraft())
     override fun observeDraft(): Flow<PromptDraft> = draft.asStateFlow()
@@ -48,6 +52,7 @@ private class FakePromptDraftRepository : PromptDraftRepository {
         draft.value = PromptDraft(prompt, negativePrompt)
     }
     override suspend fun appendPrompt(text: String, negativeText: String) {
+        failAppendWith?.let { throw it }
         appended += text to negativeText
     }
 }
@@ -102,5 +107,19 @@ class StylesViewModelTest {
             it is StylesUiState.Success && it.notice != null
         } as StylesUiState.Success
         assertEquals("Name is required.", state.notice)
+    }
+
+    @Test
+    fun `apply with storage failure reports notice`() = runTest {
+        val failing = FakePromptDraftRepository(failAppendWith = IOException("disk gone"))
+        val vm = StylesViewModel(SavedStateHandle(), FakeStyleRepository(), failing)
+        vm.uiState.success()
+        val preset = StylePreset("photo", "photorealistic", "cartoon")
+        vm.onAction(StylesAction.ApplyStyle(preset))
+        val state = vm.uiState.first {
+            it is StylesUiState.Success && it.notice != null
+        } as StylesUiState.Success
+        assertEquals("Apply failed: storage unavailable", state.notice)
+        assertTrue(failing.appended.isEmpty())
     }
 }

@@ -210,6 +210,27 @@ class GalleryViewModelTest {
         assertNull(vm.uiState.firstSuccess().confirm)
     }
 
+    @Test
+    fun `H-6 external tail removal clamps page to last non-empty`() = runTest {
+        val repo = FakeHistoryRepository()
+        val vm = GalleryViewModel(repo)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryAction.NextPage)
+        vm.onAction(GalleryAction.NextPage)
+        assertEquals(2, vm.uiState.firstSuccess().page)
+
+        // External tail deletion (e.g. from another screen): 120 -> 50,
+        // max page drops 2 -> 0. Without the source clamp the VM would sit
+        // on an empty page 2 forever (Next/Prev blocked).
+        repo.delete((51L..120L).toList())
+
+        val state = vm.uiState.first { it is GalleryUiState.Success && it.page == 0 } as GalleryUiState.Success
+        assertEquals(0, state.page)
+        assertEquals(50, state.total)
+        assertTrue(state.items.isNotEmpty())
+    }
+
     private suspend fun StateFlow<GalleryUiState>.firstSuccess(): GalleryUiState.Success =
         first { it is GalleryUiState.Success } as GalleryUiState.Success
 }

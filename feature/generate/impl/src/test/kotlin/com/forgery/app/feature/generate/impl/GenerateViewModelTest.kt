@@ -1041,4 +1041,80 @@ class GenerateViewModelTest {
         assertEquals(TextRange(2), state.inputs.prompt.selection)
         assertEquals("a cat <lora:x>", state.params.prompt)
     }
+
+    @Test
+    fun `refresh commits first model when blank`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        assertEquals("", (vm.uiState.value as GenerateUiState.Success).params.modelTitle)
+        vm.onAction(GenerateAction.RefreshModels)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.models.isNotEmpty() && it.params.modelTitle == "a.safetensors"
+        } as GenerateUiState.Success
+        assertEquals("a.safetensors", state.params.modelTitle)
+    }
+
+    @Test
+    fun `refresh preserves manual selection`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.ModelChanged("b.safetensors"))
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.params.modelTitle == "b.safetensors"
+        }
+        vm.onAction(GenerateAction.RefreshModels)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.models.isNotEmpty() && it.params.modelTitle == "b.safetensors"
+        } as GenerateUiState.Success
+        assertEquals("b.safetensors", state.params.modelTitle)
+    }
+
+    @Test
+    fun `refresh preserves handoff model`() = runTest {
+        val handoff = FakeAnalyzeHandoff()
+        handoff.set(RestoredParams(modelTitle = "h.safetensors"))
+        val vm = viewModel(handoff = handoff)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.params.modelTitle == "h.safetensors"
+        }
+        vm.onAction(GenerateAction.RefreshModels)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.models.isNotEmpty()
+        } as GenerateUiState.Success
+        assertEquals("h.safetensors", state.params.modelTitle)
+    }
+
+    @Test
+    fun `empty catalog keeps model blank`() = runTest {
+        val gen = FakeGenerationRepository()
+        gen.models = emptyList()
+        val vm = viewModel(gen)
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.RefreshModels)
+        val state = vm.uiState.first {
+            it is GenerateUiState.Success && it.engine is EngineState.Initialized
+        } as GenerateUiState.Success
+        assertTrue(state.models.isEmpty())
+        assertEquals("", state.params.modelTitle)
+    }
+
+    @Test
+    fun `generate executes committed first model`() = runTest {
+        val vm = viewModel()
+        vm.uiState.first { it is GenerateUiState.Success }
+        vm.onAction(GenerateAction.PromptChanged(TextFieldValue("a cat")))
+        vm.onAction(GenerateAction.RefreshModels)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.models.isNotEmpty() && it.params.modelTitle == "a.safetensors"
+        }
+        vm.onAction(GenerateAction.Generate)
+        vm.uiState.first {
+            it is GenerateUiState.Success && it.statusMessage?.startsWith("Started") == true
+        }
+        assertEquals(1, queue.immediate.size)
+        val job = queue.immediate.first().first.first()
+        assertEquals("a.safetensors", job.modelTitle)
+        assertTrue(job.payloadJson.contains("sd_model_checkpoint"))
+        assertTrue(job.payloadJson.contains("a.safetensors"))
+    }
 }
