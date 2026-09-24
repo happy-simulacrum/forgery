@@ -32,12 +32,11 @@ class QueueWatchdogWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val state = queueDao.get()
-        if (state != null && state.running && state.currentIndex < state.total) {
+        if (state != null && state.running && state.executingJobId != null) {
             val request = OneTimeWorkRequestBuilder<GenerationWorker>()
                 .setInputData(
                     workDataOf(
                         GenerationWorker.KEY_HOST to state.host,
-                        GenerationWorker.KEY_JOBS to state.jobsJson,
                         GenerationWorker.KEY_ORIGIN to state.origin,
                     ),
                 )

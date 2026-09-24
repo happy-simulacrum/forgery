@@ -48,7 +48,7 @@ private class FakeQueueRepository(
         val jobs = jobsFlow.value
         val index = jobs.indexOfFirst { it.id == jobId }
         if (index < 0) return false
-        if (snapshot?.running == true && index == snapshot.currentIndex) return false
+        if (snapshot?.running == true && jobId == snapshot.executingJobId) return false
         removes += jobId
         jobsFlow.value = jobs.filterIndexed { i, _ -> i != index }
         resultsFlow.value = resultsFlow.value.filter { it.jobId != jobId }
@@ -75,7 +75,8 @@ private class FakeQueueRepository(
         val snapshot = snapshotFlow.value
         val jobs = jobsFlow.value
         jobsFlow.value = if (snapshot?.running == true) {
-            val at = (snapshot.currentIndex + 1).coerceIn(0, jobs.size)
+            val execIdx = jobs.indexOfFirst { it.id == snapshot.executingJobId }
+            val at = if (execIdx < 0) jobs.size else execIdx + 1
             jobs.take(at)
         } else {
             val doneIds = resultsFlow.value.map { it.jobId }.toSet()
@@ -101,7 +102,7 @@ class QueueViewModelTest {
         val results = listOf(QueueResult("1", "a cat", listOf("/a.png"), null))
         val vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(true, 0, 1, "single", null),
+                snapshot = QueueSnapshot(true, "1", 1, "single", null),
                 jobs = jobs,
                 results = results,
             ),
@@ -126,7 +127,7 @@ class QueueViewModelTest {
     @Test
     fun `cancel delegates to repository`() = runTest {
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(true, 0, 1, "single", null),
+            snapshot = QueueSnapshot(true, "1", 1, "single", null),
         )
         val vm = QueueViewModel(repo)
         vm.uiState.first { it is QueueUiState.Success }
@@ -140,7 +141,7 @@ class QueueViewModelTest {
     fun `start delegates to repository`() = runTest {
         val jobs = listOf(QueueJob("1", "a cat", "txt", "m", "{}"))
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(false, 0, 1, "single", null),
+            snapshot = QueueSnapshot(false, null, 1, "single", null),
             jobs = jobs,
         )
         val vm = QueueViewModel(repo)
@@ -225,7 +226,7 @@ class QueueViewModelTest {
         val results = listOf(QueueResult("1", "one", listOf("/a.png"), null))
         val vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(false, 0, 2, "queue", null),
+                snapshot = QueueSnapshot(false, null, 2, "queue", null),
                 jobs = jobs,
                 results = results,
             ),
@@ -247,7 +248,7 @@ class QueueViewModelTest {
         )
         val vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(true, 0, 3, "queue", null),
+                snapshot = QueueSnapshot(true, "1", 3, "queue", null),
                 jobs = jobs,
             ),
         )
@@ -267,7 +268,7 @@ class QueueViewModelTest {
         )
         val results = listOf(QueueResult("1", "one", listOf("/a.png"), null))
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(false, 0, 2, "queue", null),
+            snapshot = QueueSnapshot(false, null, 2, "queue", null),
             jobs = jobs,
             results = results,
         )
@@ -291,7 +292,7 @@ class QueueViewModelTest {
     fun `dismiss closes pending dialog without clearing`() = runTest {
         val jobs = listOf(QueueJob("1", "one", "txt", "m", "{}"))
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(false, 0, 1, "queue", null),
+            snapshot = QueueSnapshot(false, null, 1, "queue", null),
             jobs = jobs,
         )
         val vm = QueueViewModel(repo)
@@ -345,7 +346,7 @@ class QueueViewModelTest {
             QueueJob("2", "two", "txt", "m", "{}"),
         )
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(true, 0, 2, "queue", null),
+            snapshot = QueueSnapshot(true, "1", 2, "queue", null),
             jobs = jobs,
         )
         val vm = QueueViewModel(repo)
@@ -378,7 +379,7 @@ class QueueViewModelTest {
         val jobs = listOf(QueueJob("1", "one", "txt", "m", "{}"))
         var vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(false, 0, 1, "queue", null),
+                snapshot = QueueSnapshot(false, null, 1, "queue", null),
                 jobs = jobs,
             ),
         )
@@ -387,7 +388,7 @@ class QueueViewModelTest {
 
         vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(true, 5, 1, "queue", null),
+                snapshot = QueueSnapshot(true, "ghost", 1, "queue", null),
                 jobs = jobs,
             ),
         )
@@ -399,55 +400,55 @@ class QueueViewModelTest {
     fun `running snapshot passes jobProgress through for dual bars`() = runTest {
         val vm = QueueViewModel(
             FakeQueueRepository(
-                snapshot = QueueSnapshot(true, 1, 4, "queue", null, jobProgress = 0.5f),
+                snapshot = QueueSnapshot(true, "2", 4, "queue", null, jobProgress = 0.5f, batchTotal = 3, batchDone = 1),
             ),
         )
         val state = vm.uiState.first { it is QueueUiState.Success } as QueueUiState.Success
         val snapshot = state.snapshot
         // Bars are pure UI derived from the snapshot: ViewModel must pass values as-is.
         assertEquals(0.5f, snapshot?.jobProgress)
-        assertEquals(1, snapshot?.currentIndex)
+        assertEquals("2", snapshot?.executingJobId)
         assertEquals(4, snapshot?.total)
-        assertEquals(0, snapshot?.batchTotal)
-        assertEquals(0, snapshot?.batchDone)
-        // Screen computes Queue M% as overallProgress(currentIndex, total, jobProgress).
-        val expectedQueue = overallProgress(1, 4, 0.5f)
+        assertEquals(3, snapshot?.batchTotal)
+        assertEquals(1, snapshot?.batchDone)
+        // Screen computes Queue M% as overallProgress(batchDone, batchTotal, jobProgress).
+        val expectedQueue = overallProgress(1, 3, 0.5f)
         assertEquals(
             expectedQueue,
             overallProgress(
-                snapshot?.currentIndex ?: -1,
-                snapshot?.total ?: -1,
+                snapshot?.batchDone ?: -1,
+                snapshot?.batchTotal ?: -1,
                 snapshot?.jobProgress ?: -1f,
             ),
         )
     }
 
     @Test
-    fun `grown total after append lowers overall progress`() = runTest {
+    fun `grown batch total after append lowers overall progress`() = runTest {
         val repo = FakeQueueRepository(
-            snapshot = QueueSnapshot(true, 1, 4, "queue", null, jobProgress = 0.5f),
+            snapshot = QueueSnapshot(true, "2", 4, "queue", null, jobProgress = 0.5f, batchTotal = 4, batchDone = 1),
         )
         val vm = QueueViewModel(repo)
         var state = vm.uiState.first {
-            it is QueueUiState.Success && it.snapshot?.total == 4
+            it is QueueUiState.Success && it.snapshot?.batchTotal == 4
         } as QueueUiState.Success
         val before = overallProgress(
-            state.snapshot!!.currentIndex,
-            state.snapshot!!.total,
+            state.snapshot!!.batchDone,
+            state.snapshot!!.batchTotal,
             state.snapshot!!.jobProgress,
         )
-        // Appending jobs bumps total while currentIndex/jobProgress stay: no extra
+        // Appending jobs bumps batchTotal while batchDone/jobProgress stay: no extra
         // ViewModel code needed, recomputation derives from the fresh snapshot.
-        repo.emitSnapshot(QueueSnapshot(true, 1, 6, "queue", null, jobProgress = 0.5f))
+        repo.emitSnapshot(QueueSnapshot(true, "2", 6, "queue", null, jobProgress = 0.5f, batchTotal = 6, batchDone = 1))
         state = vm.uiState.first {
-            it is QueueUiState.Success && it.snapshot?.total == 6
+            it is QueueUiState.Success && it.snapshot?.batchTotal == 6
         } as QueueUiState.Success
         val after = overallProgress(
-            state.snapshot!!.currentIndex,
-            state.snapshot!!.total,
+            state.snapshot!!.batchDone,
+            state.snapshot!!.batchTotal,
             state.snapshot!!.jobProgress,
         )
-        assertEquals(1, state.snapshot?.currentIndex)
+        assertEquals("2", state.snapshot?.executingJobId)
         assertTrue(after < before)
     }
 }

@@ -451,7 +451,7 @@ private fun GenerateContent(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "Image ${(progress * 100).toInt()}% — job ${snap.currentIndex + 1}/${snap.total}",
+                        "Image ${(progress * 100).toInt()}% — job ${(snap.batchDone + 1).coerceAtMost(snap.batchTotal.coerceAtLeast(1))}/${snap.batchTotal.coerceAtLeast(1)}",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 4.dp),
                     )

@@ -80,6 +80,9 @@ data class QueueJob(
     val payloadJson: String,
     /** Frozen VAE / Text Encoder selection (Forge Neo `forge_additional_modules`). */
     val additionalModules: List<String> = emptyList(),
+    /** File-backed inpaint inputs (see QueueInputFiles): payloadJson carries params only. */
+    val initImagePath: String? = null,
+    val maskPath: String? = null,
 )
 
 @Serializable
@@ -125,7 +128,7 @@ enum class DefaultField { PROMPT, NEGATIVE, MODEL, SAMPLER, SCHEDULER, UPSCALER 
 
 data class QueueSnapshot(
     val running: Boolean,
-    val currentIndex: Int,
+    val executingJobId: String?,
     val total: Int,
     val origin: String,
     val stopReason: String?,

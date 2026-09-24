@@ -13,8 +13,9 @@ import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
+import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
-import com.forgery.app.core.data.buildImg2ImgPayload
+import com.forgery.app.core.data.buildTxt2ImgPayload
 import com.forgery.app.core.data.payloadToJsonString
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.GenerationParams
@@ -41,6 +42,7 @@ class InpaintViewModel @Inject constructor(
     private val generationRepository: GenerationRepository,
     private val queueRepository: QueueRepository,
     private val modulesSelection: ModulesSelectionRepository,
+    private val queueInputs: QueueInputs,
 ) : ViewModel() {
 
     companion object {
@@ -250,6 +252,7 @@ class InpaintViewModel @Inject constructor(
             }
             statusMessage.value = "Preparing…"
             try {
+                val jobId = UUID.randomUUID().toString()
                 val mask = withContext(Dispatchers.Default) {
                     renderMaskBase64(source, e.strokes)
                 }
@@ -266,20 +269,24 @@ class InpaintViewModel @Inject constructor(
                     scheduler = e.scheduler,
                     additionalModules = modulesSelection.observeModules(GenerationMode.SDXL).first(),
                 )
-                val payload = buildImg2ImgPayload(
-                    params = params,
-                    initImages = listOf(source.base64),
-                    maskBase64 = mask,
-                    denoisingStrength = e.denoise,
-                    maskBlur = e.maskBlur,
-                )
+                // C-1 file-back: params-only payload (~1KB); source/mask PNG
+                // bytes live in filesDir/queue_inputs/<jobId>/, worker expands
+                // them to init_images/mask base64 right before POST.
+                val base = buildTxt2ImgPayload(params).toMutableMap()
+                base["denoising_strength"] = e.denoise
+                base["mask_blur"] = e.maskBlur
+                val (initPath, maskPath) = withContext(Dispatchers.IO) {
+                    queueInputs.saveBase64(jobId, source.base64, mask)
+                }
                 val job = QueueJob(
-                    id = UUID.randomUUID().toString(),
+                    id = jobId,
                     desc = "INP: ${e.prompt.take(60)}",
                     mode = "inp",
                     modelTitle = e.modelTitle,
-                    payloadJson = payloadToJsonString(payload),
+                    payloadJson = payloadToJsonString(base),
                     additionalModules = params.additionalModules,
+                    initImagePath = initPath,
+                    maskPath = maskPath,
                 )
                 val wasRunning = queueRepository.observeSnapshot().first()?.running == true
                 queueRepository.enqueueImmediate(listOf(job), origin = "single")

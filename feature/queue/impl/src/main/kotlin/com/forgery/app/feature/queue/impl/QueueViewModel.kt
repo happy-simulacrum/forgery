@@ -45,7 +45,8 @@ class QueueViewModel @Inject constructor(
                 val current = uiState.value as? QueueUiState.Success ?: return
                 val snapshot = current.snapshot
                 pendingDialogFlow.value = if (snapshot?.running == true) {
-                    val from = (snapshot.currentIndex + 1).coerceIn(0, current.jobs.size)
+                    val execIdx = current.jobs.indexOfFirst { it.id == snapshot.executingJobId }
+                    val from = if (execIdx < 0) current.jobs.size else execIdx + 1
                     val upcoming = current.jobs.drop(from).count { job ->
                         current.results.none { it.jobId == job.id }
                     }

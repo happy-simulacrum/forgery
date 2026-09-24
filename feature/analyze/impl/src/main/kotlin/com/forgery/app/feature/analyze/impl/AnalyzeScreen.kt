@@ -19,6 +19,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -32,6 +36,8 @@ import com.forgery.app.core.designsystem.ForgeryTheme
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.ui.ErrorState
 import com.forgery.app.core.ui.LoadingState
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.math.round
 
 @Composable
@@ -41,6 +47,8 @@ internal fun AnalyzeRoute(
     viewModel: AnalyzeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    var copyInFlight by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.onAction(AnalyzeAction.PickResult(uri.toString()))
@@ -48,9 +56,23 @@ internal fun AnalyzeRoute(
 
     AnalyzeScreen(
         uiState = uiState,
-        onAction = viewModel::onAction,
+        onAction = { action ->
+            if (action is AnalyzeAction.CopyToMode) {
+                // Navigate only after the handoff write completes (handoff race C-4).
+                if (!copyInFlight) {
+                    copyInFlight = true
+                    scope.launch {
+                        viewModel.onAction(action)
+                        viewModel.copyDone.first { it == action.mode }
+                        onNavigateToGenerate()
+                    }
+                }
+            } else {
+                viewModel.onAction(action)
+            }
+        },
         onPickImage = { picker.launch("image/*") },
-        onNavigateToGenerate = onNavigateToGenerate,
+        copyInFlight = copyInFlight,
         modifier = modifier,
     )
 }
@@ -60,7 +82,7 @@ internal fun AnalyzeScreen(
     uiState: AnalyzeUiState,
     onAction: (AnalyzeAction) -> Unit,
     onPickImage: () -> Unit,
-    onNavigateToGenerate: () -> Unit,
+    copyInFlight: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     when (uiState) {
@@ -70,7 +92,7 @@ internal fun AnalyzeScreen(
             state = uiState,
             onAction = onAction,
             onPickImage = onPickImage,
-            onNavigateToGenerate = onNavigateToGenerate,
+            copyInFlight = copyInFlight,
             modifier = modifier,
         )
     }
@@ -81,7 +103,7 @@ private fun AnalyzeContent(
     state: AnalyzeUiState.Success,
     onAction: (AnalyzeAction) -> Unit,
     onPickImage: () -> Unit,
-    onNavigateToGenerate: () -> Unit,
+    copyInFlight: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -162,10 +184,8 @@ private fun AnalyzeContent(
             ) {
                 GenerationMode.entries.forEach { mode ->
                     OutlinedButton(
-                        onClick = {
-                            onAction(AnalyzeAction.CopyToMode(mode))
-                            onNavigateToGenerate()
-                        },
+                        onClick = { onAction(AnalyzeAction.CopyToMode(mode)) },
+                        enabled = !copyInFlight,
                         modifier = Modifier.weight(1f),
                     ) { Text(mode.name) }
                 }
@@ -258,7 +278,6 @@ private fun AnalyzeScreenPreview() {
             ),
             onAction = {},
             onPickImage = {},
-            onNavigateToGenerate = {},
         )
     }
 }

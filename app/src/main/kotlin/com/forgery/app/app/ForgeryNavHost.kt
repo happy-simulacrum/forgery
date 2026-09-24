@@ -142,7 +142,13 @@ fun ForgeryNavHost(
                 onNavigateToAnalyze = { path -> nav.navigate(AnalyzeRoute(imagePath = path)) },
                 onNavigateToInpaint = { path -> nav.navigate(InpaintRoute(path)) },
             )
-            analyzeScreen(onNavigateToGenerate = { nav.navigate(GenerateRoute()) })
+            analyzeScreen(onNavigateToGenerate = {
+                nav.navigate(GenerateRoute()) {
+                    popUpTo(nav.graph.startDestinationId) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            })
             settingsScreen(onBackClick = {})
             loraScreen(onBackClick = { nav.popBackStack() })
             modulesScreen(onBackClick = { nav.popBackStack() })

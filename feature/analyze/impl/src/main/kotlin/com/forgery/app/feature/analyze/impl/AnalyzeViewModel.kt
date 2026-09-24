@@ -14,15 +14,18 @@ import com.forgery.app.core.data.AnalyzeHandoffRepository
 import com.forgery.app.core.data.HrSettingsRepository
 import com.forgery.app.core.data.PromptDraftRepository
 import com.forgery.app.core.model.GenerationMode
-import com.forgery.app.core.model.HrSettings
 import com.forgery.app.core.model.RestoredParams
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,6 +49,9 @@ class AnalyzeViewModel @Inject constructor(
     private val uri = MutableStateFlow<String?>(null)
     private val parsed = MutableStateFlow<Parsed?>(null)
     private val statusMessage = MutableStateFlow<String?>(null)
+
+    private val _copyDone = MutableSharedFlow<GenerationMode>(extraBufferCapacity = 1)
+    val copyDone: SharedFlow<GenerationMode> = _copyDone.asSharedFlow()
 
     private data class Parsed(
         val prompt: String,
@@ -118,27 +124,29 @@ class AnalyzeViewModel @Inject constructor(
     }
 
     private fun copyToMode(mode: GenerationMode) {
-        val p = parsed.value
-        if (p == null || p.raw == null) {
-            statusMessage.value = "Nothing to copy."
-            return
-        }
         viewModelScope.launch {
+            val p = parsed.value
+            if (p == null || p.raw == null) {
+                statusMessage.value = "Nothing to copy."
+                _copyDone.tryEmit(mode)
+                return@launch
+            }
             promptDrafts.setPrompt(mode, p.prompt, p.negativePrompt)
             promptDrafts.setActiveMode(mode)
             val s = p.settings
             // Persist HR only when the image carried parseable settings;
             // empty (all-null) or missing settings leave HR untouched.
+            // Merge into current HR (keep existing cfg + fallbacks) instead of overwrite.
             if (s != null && s != A1111Settings()) {
+                val cur = hrSettings.observeHr(mode).first()
                 hrSettings.saveHr(
                     mode,
-                    HrSettings(
+                    cur.copy(
                         enable = s.hrEnable,
-                        upscaler = s.hrUpscaler ?: "Latent",
-                        scale = s.hrScale ?: 1.5,
-                        steps = s.hrSteps ?: 6,
-                        denoise = s.hrDenoise ?: 0.4,
-                        cfg = 1.0,
+                        upscaler = s.hrUpscaler ?: cur.upscaler,
+                        scale = s.hrScale ?: cur.scale,
+                        steps = s.hrSteps ?: cur.steps,
+                        denoise = s.hrDenoise ?: cur.denoise,
                     ),
                 )
             }
@@ -156,6 +164,7 @@ class AnalyzeViewModel @Inject constructor(
                 ),
             )
             statusMessage.value = "Copied to ${mode.name}"
+            _copyDone.tryEmit(mode)
         }
     }
 }

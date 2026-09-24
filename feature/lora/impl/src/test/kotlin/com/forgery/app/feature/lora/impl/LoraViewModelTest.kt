@@ -136,8 +136,8 @@ class LoraViewModelTest {
         assertEquals(1, drafts.appended.size)
         val (mode, tag, trigger) = drafts.appended.first()
         assertEquals(GenerationMode.SDXL, mode)
-        assertEquals("<lora:detail:0.8>", tag)
-        assertEquals("masterpiece", trigger)
+        assertEquals("<lora:detail:0.8> masterpiece", tag)
+        assertEquals("", trigger)
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.forgery.app.core.network.ForgeService
 import com.forgery.app.core.network.images
 import com.forgery.app.core.network.progressValue
 import com.forgery.app.core.network.stringField
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonObject
@@ -98,6 +99,8 @@ class DefaultGenerationRepository @Inject constructor(
     private suspend fun <T> call(block: suspend (ForgeService) -> T): Result<T> =
         try {
             Result.Success(block(controlService()))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.Error(e.message ?: e.toString(), e)
         }
@@ -121,6 +124,8 @@ class DefaultGenerationRepository @Inject constructor(
                 }
                 delay(backoff)
                 backoff = (backoff * 1.5).toLong()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return Result.Error(e.message ?: e.toString(), e)
             }
@@ -135,6 +140,8 @@ class DefaultGenerationRepository @Inject constructor(
         val api = serviceProvider?.invoke(baseUrl)
             ?: forgeApiFactory.createControl(baseUrl, config.cfClientId, config.cfClientSecret)
         Result.Success(block(api, baseUrl))
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
         Result.Error(e.message ?: e.toString(), e)
     }
@@ -217,6 +224,8 @@ class DefaultGenerationRepository @Inject constructor(
                 delay(GenerationRepository.MODEL_ALIGN_DELAY_MS)
             }
             Result.Error("Timeout: server failed to load model.")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.Error(e.message ?: e.toString(), e)
         }
@@ -270,6 +279,8 @@ class DefaultGenerationRepository @Inject constructor(
                 attempts++
             }
             Result.Error("Timeout: server failed to load modules.")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.Error(e.message ?: e.toString(), e)
         }

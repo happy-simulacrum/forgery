@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Locale
 import javax.inject.Inject
 
 @HiltViewModel
@@ -138,9 +139,11 @@ class LoraViewModel @Inject constructor(
         val d = detail.value ?: return
         viewModelScope.launch {
             val key = d.item.alias.ifBlank { d.item.name }
-            val weight = "%.2f".format(d.weight).trimEnd('0').trimEnd('.')
+            val weight = "%.2f".format(Locale.US, d.weight).trimEnd('0').trimEnd('.')
             val tag = "<lora:$key:$weight>"
-            promptDrafts.appendPrompt(mode, tag, d.meta.trigger)
+            val trigger = d.meta.trigger.trim()
+            val positive = if (trigger.isBlank()) tag else "$tag $trigger"
+            promptDrafts.appendPrompt(mode, positive, "")
             detail.value = null
             notice.value = "Inserted $tag"
         }

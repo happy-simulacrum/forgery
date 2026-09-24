@@ -18,6 +18,9 @@ import androidx.work.WorkerParameters
 import androidx.work.ListenableWorker.Result as WorkResult
 import com.forgery.app.core.common.Result as ForgeResult
 import com.forgery.app.core.common.overallProgress
+import com.forgery.app.core.database.QueueJobsDao
+import com.forgery.app.core.database.QueueResultsDao
+import com.forgery.app.core.database.QueueResultEntity
 import com.forgery.app.core.database.QueueStateDao
 import com.forgery.app.core.database.QueueTx
 import com.forgery.app.core.model.QueueJob
@@ -30,6 +33,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
@@ -52,6 +56,9 @@ class GenerationWorker @AssistedInject constructor(
     private val generationRepository: GenerationRepository,
     private val historyRepository: HistoryRepository,
     private val queueDao: QueueStateDao,
+    private val jobsDao: QueueJobsDao,
+    private val resultsDao: QueueResultsDao,
+    private val inputFiles: QueueInputs,
     private val tx: QueueTx,
 ) : CoroutineWorker(appContext, params) {
 
@@ -59,20 +66,17 @@ class GenerationWorker @AssistedInject constructor(
         const val UNIQUE_QUEUE = "forgery_generation_queue"
         const val TAG_QUEUE = "forgery_queue"
         const val KEY_HOST = "host"
-        const val KEY_JOBS = "jobs"
         const val KEY_ORIGIN = "origin"
         const val CHANNEL_ID = "forgery_queue"
         const val NOTIFICATION_ID = 1002
     }
 
     override suspend fun doWork(): WorkResult = withContext(Dispatchers.IO) {
-        // Job list lives in the DB: it is re-read every iteration so jobs
-        // appended mid-run (Generate while running) are picked up, and the
-        // watchdog resume path continues from persisted currentIndex.
-        // Input extras are a fallback only for a missing row (never a stale
-        // stand-in for a truncated list).
+        // C-1: job list lives in Room per-row tables (no jobsJson in inputData —
+        // WorkManager 10KB cap). Re-read the next pending row every iteration so
+        // jobs appended mid-run are picked up and the watchdog resumes from
+        // persisted executingJobId.
         val fallbackHost = inputData.getString(KEY_HOST).orEmpty()
-        val fallbackJobs = decodeJobs(inputData.getString(KEY_JOBS).orEmpty())
 
         val wakeLock = acquireWakeLock()
         val wifiLock = acquireWifiLock()
@@ -80,24 +84,45 @@ class GenerationWorker @AssistedInject constructor(
             setForeground(createForegroundInfo("Batch Running", "Starting queue…", 1))
             var finished = 0
             while (true) {
-                val state = queueDao.get()
-                val dbJobs = state?.let { decodeJobs(it.jobsJson) }
-                val jobs = when {
-                    dbJobs != null && dbJobs.isNotEmpty() -> dbJobs
-                    state == null -> fallbackJobs
-                    else -> emptyList()
-                }
-                val host = state?.host?.takeIf { it.isNotBlank() } ?: fallbackHost
-                val index = state?.currentIndex ?: 0
-                if (state?.running != true || host.isBlank() || jobs.isEmpty() ||
-                    index >= jobs.size || index >= (state?.total ?: jobs.size)
-                ) {
-                    break
-                }
-                runJob(state, host, jobs[index], index, jobs.size)
-                finished = index + 1
+                val next = tx.run {
+                    val state = queueDao.get()
+                    if (state?.running != true) return@run null
+                    val done = resultsDao.doneIds().toSet()
+                    val ordered = jobsDao.getOrdered()
+                    var exec = state.executingJobId
+                    if (exec == null || ordered.none { it.jobId == exec } || exec in done) {
+                        exec = ordered.firstOrNull { it.jobId !in done }?.jobId
+                        if (exec != state.executingJobId) {
+                            queueDao.save(state.copy(executingJobId = exec))
+                        }
+                    }
+                    val id = exec ?: return@run null
+                    val entity = jobsDao.getById(id) ?: return@run null
+                    val host = state.host.takeIf { it.isNotBlank() } ?: fallbackHost
+                    if (host.isBlank()) return@run null
+                    val modules = runCatching {
+                        WorkerJson.decodeFromString(
+                            ListSerializer(String.serializer()),
+                            entity.modulesJson,
+                        )
+                    }.getOrElse { emptyList() }
+                    val job = QueueJob(
+                        id = entity.jobId,
+                        desc = entity.descr,
+                        mode = entity.mode,
+                        modelTitle = entity.modelTitle,
+                        payloadJson = entity.payload,
+                        additionalModules = modules,
+                        initImagePath = entity.initImagePath,
+                        maskPath = entity.maskPath,
+                    )
+                    val index = ordered.indexOfFirst { it.jobId == id }
+                    PendingJob(job, state, host, index, ordered.size)
+                } ?: break
+                runJob(next.snap, next.host, next.job, next.index, next.total)
+                finished++
             }
-            tx.run { queueDao.get()?.let { queueDao.save(it.copy(running = false)) } }
+            tx.run { queueDao.get()?.let { queueDao.save(it.copy(running = false, executingJobId = null)) } }
             setForeground(createForegroundInfo("Batch Complete", "$finished job(s) finished.", 100))
             WorkResult.success()
         } catch (e: CancellationException) {
@@ -146,7 +171,16 @@ class GenerationWorker @AssistedInject constructor(
                 else -> Unit
             }
 
-            val payload = jsonStringToPayload(job.payloadJson)
+            val payload = jsonStringToPayload(job.payloadJson).toMutableMap()
+            // C-1 file-back: expand input file paths to base64 right before POST.
+            job.initImagePath?.let { path ->
+                val b64 = inputFiles.loadBase64OrNull(path)
+                    ?: return abort(job, index, total, "Missing input image file.")
+                payload["init_images"] = listOf(b64)
+            }
+            job.maskPath?.let { path ->
+                inputFiles.loadBase64OrNull(path)?.let { payload["mask"] = it }
+            }
             // Progress poller, best-effort (legacy: 3s interval thread).
             // Single-column atomic update: never reads the row, so it cannot
             // resurrect jobs dropped by a concurrent clear.
@@ -210,27 +244,45 @@ class GenerationWorker @AssistedInject constructor(
     ): QueueResult {
         val result = QueueResult(job.id, job.desc, files, error)
         tx.run {
-            val state = queueDao.get()
-            if (state != null) {
-                // Id-based merge against freshly-read state (see withResult):
-                // the loop-top index may be minutes stale after the network
-                // call, and must never overwrite a concurrent clear/remove.
-                val updated = state.withResult(job.id, result, error != null)
-                if (updated != null) {
-                    queueDao.save(updated)
-                    Log.d(
-                        QueueLogTag,
-                        "record ${job.id} at=${updated.currentIndex - 1} batch=${updated.batchDone}/${updated.batchTotal}",
-                    )
-                } else {
-                    repairRunningPointer(
-                        state,
-                        decodeQueueJobs(state.jobsJson),
-                        decodeQueueResults(state.resultsJson).map { it.jobId }.toSet(),
-                    )?.let { queueDao.save(it) }
-                    Log.d(QueueLogTag, "record ${job.id} skipped (duplicate or vanished)")
-                }
+            val state = queueDao.get() ?: return@run
+            // Id-based merge against freshly-read state: the loop-top row may
+            // be minutes stale after the network call; concurrent clear/remove
+            // must never be overwritten. Duplicate results are ignored.
+            if (resultsDao.getById(job.id) != null) {
+                Log.d(QueueLogTag, "record ${job.id} skipped (duplicate)")
+                return@run
             }
+            val entity = jobsDao.getById(job.id)
+            if (entity == null) {
+                // Job vanished mid-flight (concurrent clear): repair pointer.
+                val done = resultsDao.doneIds().toSet()
+                val firstPending = jobsDao.getOrdered().firstOrNull { it.jobId !in done }?.jobId
+                if (state.executingJobId == job.id) {
+                    queueDao.save(state.copy(executingJobId = firstPending))
+                }
+                Log.d(QueueLogTag, "record ${job.id} skipped (vanished)")
+                return@run
+            }
+            val filesJson = runCatching {
+                WorkerJson.encodeToString(ListSerializer(String.serializer()), files)
+            }.getOrElse { "[]" }
+            resultsDao.insertIgnore(
+                QueueResultEntity(jobId = job.id, descr = job.desc, filesJson = filesJson, error = error),
+            )
+            val done = resultsDao.doneIds().toSet()
+            val next = jobsDao.getOrdered().firstOrNull { it.jobId !in done }?.jobId
+            queueDao.save(
+                state.copy(
+                    executingJobId = next,
+                    running = if (error != null) false else state.running,
+                    jobProgress = 0f,
+                    batchDone = state.batchDone + 1,
+                ),
+            )
+            Log.d(
+                QueueLogTag,
+                "record ${job.id} batch=${state.batchDone + 1}/${state.batchTotal}",
+            )
         }
         return result
     }
@@ -248,7 +300,11 @@ class GenerationWorker @AssistedInject constructor(
     }
 
     private suspend fun persistRunningFlag(running: Boolean) {
-        tx.run { queueDao.get()?.let { queueDao.save(it.copy(running = running)) } }
+        tx.run {
+            queueDao.get()?.let {
+                queueDao.save(it.copy(running = running, executingJobId = if (running) it.executingJobId else null))
+            }
+        }
     }
 
     // -- files --
@@ -355,9 +411,13 @@ class GenerationWorker @AssistedInject constructor(
         } catch (_: Exception) { }
     }
 
-    private fun decodeJobs(raw: String): List<QueueJob> =
-        if (raw.isBlank()) emptyList()
-        else WorkerJson.decodeFromString(ListSerializer(QueueJob.serializer()), raw)
-
     private class JobFailedException(message: String) : Exception(message)
+
+    private data class PendingJob(
+        val job: QueueJob,
+        val snap: com.forgery.app.core.database.QueueStateEntity,
+        val host: String,
+        val index: Int,
+        val total: Int,
+    )
 }

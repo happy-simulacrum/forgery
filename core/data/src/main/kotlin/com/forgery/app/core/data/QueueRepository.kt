@@ -8,6 +8,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.forgery.app.core.database.QueueJobsDao
+import com.forgery.app.core.database.QueueJobEntity
+import com.forgery.app.core.database.QueueResultsDao
+import com.forgery.app.core.database.QueueResultEntity
 import com.forgery.app.core.database.QueueStateDao
 import com.forgery.app.core.database.QueueStateEntity
 import com.forgery.app.core.database.QueueTx
@@ -16,80 +20,64 @@ import com.forgery.app.core.model.QueueResult
 import com.forgery.app.core.model.QueueSnapshot
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
 internal val QueueJson = Json { ignoreUnknownKeys = true }
 
-internal fun decodeQueueJobs(raw: String?): List<QueueJob> =
-    if (raw.isNullOrBlank()) emptyList()
-    else QueueJson.decodeFromString(ListSerializer(QueueJob.serializer()), raw)
-
-internal fun encodeQueueJobs(jobs: List<QueueJob>): String =
-    QueueJson.encodeToString(ListSerializer(QueueJob.serializer()), jobs)
-
-internal fun decodeQueueResults(raw: String?): List<QueueResult> =
-    if (raw.isNullOrBlank()) emptyList()
-    else QueueJson.decodeFromString(ListSerializer(QueueResult.serializer()), raw)
-
-internal fun encodeQueueResults(results: List<QueueResult>): String =
-    QueueJson.encodeToString(ListSerializer(QueueResult.serializer()), results)
-
 internal const val QueueLogTag = "ForgeryQueue"
 
-/**
- * Applies a finished [result] to a freshly-read [QueueStateEntity].
- *
- * Id-based (not index-based): the worker captures the job id before the long
- * network call and merges against the state as it is *now*, so concurrent
- * list mutations (clear/remove mid-flight) cannot resurrect dropped jobs or
- * shift the pointer. Returns null when there is nothing to apply: the result
- * is a duplicate, or the job vanished from the list (caller repairs the
- * pointer via [repairRunningPointer] and continues).
- */
-internal fun QueueStateEntity.withResult(
-    jobId: String,
-    result: QueueResult,
-    failed: Boolean,
-): QueueStateEntity? {
-    val jobs = decodeQueueJobs(jobsJson)
-    val prev = decodeQueueResults(resultsJson)
-    if (prev.any { it.jobId == jobId }) return null
-    val at = jobs.indexOfFirst { it.id == jobId }
-    if (at < 0) return null
-    return copy(
-        currentIndex = at + 1,
-        running = if (failed) false else running,
-        jobProgress = 0f,
-        resultsJson = encodeQueueResults(prev + result),
-        batchDone = batchDone + 1,
-    )
-}
+private fun encodeStrings(values: List<String>): String =
+    QueueJson.encodeToString(ListSerializer(String.serializer()), values)
 
-/**
- * Self-heal for a stale execution pointer while running: re-derives
- * `currentIndex` as the first result-less job. Returns null when the pointer
- * is already healthy (points at a result-less job) or the queue is idle, so
- * callers only write on actual repair. Never rewinds past a healthy pointer.
- */
-internal fun repairRunningPointer(
-    state: QueueStateEntity,
-    jobs: List<QueueJob>,
-    doneIds: Set<String>,
-): QueueStateEntity? {
-    if (!state.running) return null
-    val cur = jobs.getOrNull(state.currentIndex)
-    if (cur != null && cur.id !in doneIds) return null
-    val firstPending = jobs.indexOfFirst { it.id !in doneIds }
-    val fixed = if (firstPending < 0) jobs.size else firstPending
-    if (fixed == state.currentIndex) return null
-    Log.d(QueueLogTag, "repair pointer ${state.currentIndex} -> $fixed (jobs=${jobs.map { it.id }})")
-    return state.copy(currentIndex = fixed)
-}
+private fun decodeStrings(raw: String?): List<String> =
+    if (raw.isNullOrBlank()) emptyList()
+    else runCatching {
+        QueueJson.decodeFromString(ListSerializer(String.serializer()), raw)
+    }.getOrElse { emptyList() }
+
+private fun QueueJob.toEntity(order: Int) = QueueJobEntity(
+    jobId = id,
+    sortOrder = order,
+    descr = desc,
+    mode = mode,
+    modelTitle = modelTitle,
+    payload = payloadJson,
+    modulesJson = encodeStrings(additionalModules),
+    initImagePath = initImagePath,
+    maskPath = maskPath,
+)
+
+private fun QueueJobEntity.toJob() = QueueJob(
+    id = jobId,
+    desc = descr,
+    mode = mode,
+    modelTitle = modelTitle,
+    payloadJson = payload,
+    additionalModules = decodeStrings(modulesJson),
+    initImagePath = initImagePath,
+    maskPath = maskPath,
+)
+
+private fun QueueResult.toEntity() = QueueResultEntity(
+    jobId = jobId,
+    descr = desc,
+    filesJson = encodeStrings(files),
+    error = error,
+)
+
+private fun QueueResultEntity.toResult() = QueueResult(
+    jobId = jobId,
+    desc = descr,
+    files = decodeStrings(filesJson),
+    error = error,
+)
 
 interface QueueRepository {
     fun observeSnapshot(): Flow<QueueSnapshot?>
@@ -99,19 +87,19 @@ interface QueueRepository {
     /**
      * Persist jobs without starting execution (QUEUE button). Always appends,
      * never replaces: repeated presses accumulate items in TO DO.
-     * Idle: appends to staged jobs, keeps results/currentIndex (a finished
+     * Idle: appends to staged jobs, keeps results (a finished
      * batch keeps its DONE section, new jobs land behind it).
-     * Running with a non-empty queue: appends to the tail so the executing
-     * queue is never reset (running/currentIndex/resultsJson/host/origin kept);
+     * Running: appends to the tail so the executing
+     * queue is never reset (running/executingId/results/host/origin kept);
      * the launched batch grows ([QueueSnapshot.batchTotal] += appended).
      */
     suspend fun stage(jobs: List<QueueJob>, origin: String)
 
     /**
      * Start execution of staged jobs (QUE "Start Queue"). The execution
-     * pointer is re-derived as the first result-less job (never trusts the
-     * stored `currentIndex`), and the batch counter is frozen as
-     * `batchTotal = pending count, batchDone = 0`. No-op when empty/no pending.
+     * pointer is re-derived as the first result-less job, and the batch
+     * counter is frozen as `batchTotal = pending count, batchDone = 0`.
+     * No-op when empty/no pending.
      */
     suspend fun start()
 
@@ -131,9 +119,7 @@ interface QueueRepository {
     /**
      * Remove a single job (from TO DO or DONE) plus its [QueueResult] if any.
      * Returns false and changes nothing when the job is currently executing
-     * ([QueueSnapshot.currentIndex] while running) or does not exist.
-     * Removing a job before the execution pointer shifts `currentIndex` down
-     * so the worker (which re-reads the list every iteration) stays aligned.
+     * ([QueueSnapshot.executingJobId] while running) or does not exist.
      * Removing an upcoming job while running also shrinks the launched batch
      * ([QueueSnapshot.batchTotal]).
      */
@@ -162,10 +148,10 @@ interface QueueRepository {
     /**
      * Clear pending section (TO DO):
      * - idle: removes all jobs without a result, keeps results/history;
-     * - running: removes all jobs after the currently executing one
-     *   (index = currentIndex), keeps past + current. Worker is not
+     * - running: removes all jobs after the currently executing one,
+     *   keeps past + current. Worker is not
      *   cancelled; it finishes the current job and stops (it re-reads
-     *   the job list from DB every iteration). The launched batch shrinks by
+     *   the next pending job from DB every iteration). The launched batch shrinks by
      *   the removed upcoming count (never below already-completed).
      */
     suspend fun clearPending()
@@ -173,7 +159,6 @@ interface QueueRepository {
 
 private data class WorkerLaunch(
     val host: String,
-    val jobsJson: String,
     val origin: String,
     val policy: ExistingWorkPolicy,
 )
@@ -182,17 +167,24 @@ private data class WorkerLaunch(
 open class DefaultQueueRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val dao: QueueStateDao,
+    private val jobsDao: QueueJobsDao,
+    private val resultsDao: QueueResultsDao,
     private val connectionRepository: ConnectionRepository,
     private val tx: QueueTx,
+    private val inputFiles: QueueInputs,
 ) : QueueRepository {
 
     override fun observeSnapshot(): Flow<QueueSnapshot?> =
-        dao.observe().map { e ->
-            e?.let {
+        combine(dao.observe(), jobsDao.observeOrdered(), resultsDao.observeAll()) { state, jobs, results ->
+            state?.let {
+                val doneIds = results.map { r -> r.jobId }.toSet()
+                val validExecuting = it.executingJobId?.takeIf { id ->
+                    jobs.any { j -> j.jobId == id } && id !in doneIds
+                }
                 QueueSnapshot(
                     running = it.running,
-                    currentIndex = it.currentIndex,
-                    total = it.total,
+                    executingJobId = if (it.running) validExecuting else null,
+                    total = jobs.size,
                     origin = it.origin,
                     stopReason = null,
                     jobProgress = it.jobProgress,
@@ -203,109 +195,73 @@ open class DefaultQueueRepository @Inject constructor(
         }
 
     override fun observeJobs(): Flow<List<QueueJob>> =
-        dao.observe().map { e -> decodeQueueJobs(e?.jobsJson) }
+        jobsDao.observeOrdered().map { list -> list.map { it.toJob() } }
 
     override fun observeResults(): Flow<List<QueueResult>> =
-        dao.observe().map { e ->
-            if (e == null || e.resultsJson.isBlank()) emptyList()
-            else QueueJson.decodeFromString(ListSerializer(QueueResult.serializer()), e.resultsJson)
-        }
+        resultsDao.observeAll().map { list -> list.map { it.toResult() } }
 
     override suspend fun stage(jobs: List<QueueJob>, origin: String) {
         require(jobs.isNotEmpty())
         tx.run {
             val state = dao.get()
-            val currentJobs = decodeQueueJobs(state?.jobsJson)
-            if (state != null && state.running && currentJobs.isNotEmpty()) {
-                // Append to tail: never reset a running queue (only cancel()
-                // may clear running). Worker re-reads jobs from DB each iteration.
-                // The launched batch grows: the counter must include additions.
-                val newJobs = currentJobs + jobs
+            val host = state?.host?.takeIf { it.isNotBlank() }
+                ?: connectionRepository.observe().first().webUiBaseUrl()
+            if (state == null) {
                 dao.save(
-                    state.copy(
-                        jobsJson = encodeQueueJobs(newJobs),
-                        total = newJobs.size,
-                        jobProgress = 0f,
-                        batchTotal = state.batchTotal + jobs.size,
-                    ),
-                )
-                return@run
-            }
-            if (state != null && !state.running) {
-                // Idle with staged state: append behind existing jobs (DONE section
-                // and results stay intact), never replace. Pointer/batch are
-                // (re-)derived at start(), so they are left alone here.
-                val newJobs = currentJobs + jobs
-                dao.save(
-                    state.copy(
+                    QueueStateEntity(
                         running = false,
-                        total = newJobs.size,
+                        executingJobId = null,
                         origin = origin,
-                        host = connectionRepository.observe().first().webUiBaseUrl(),
-                        jobsJson = encodeQueueJobs(newJobs),
+                        host = host,
                         jobProgress = 0f,
                     ),
                 )
+                jobsDao.upsertAll(jobs.mapIndexed { i, job -> job.toEntity(i) })
                 return@run
             }
-            val host = connectionRepository.observe().first().webUiBaseUrl()
-            dao.save(
-                QueueStateEntity(
-                    running = false,
-                    currentIndex = 0,
-                    total = jobs.size,
-                    origin = origin,
-                    host = host,
-                    jobsJson = encodeQueueJobs(jobs),
-                    resultsJson = "[]",
-                    jobProgress = 0f,
-                ),
-            )
+            val base = jobsDao.maxOrder()
+            jobsDao.upsertAll(jobs.mapIndexed { i, job -> job.toEntity(base + 1 + i) })
+            if (state.running) {
+                dao.save(state.copy(batchTotal = state.batchTotal + jobs.size))
+            } else {
+                dao.save(state.copy(origin = origin, host = host, jobProgress = 0f))
+            }
         }
     }
 
     override suspend fun start() {
         val launch: WorkerLaunch? = tx.run {
             val state = dao.get() ?: return@run null
-            val jobs = decodeQueueJobs(state.jobsJson)
-            if (jobs.isEmpty()) return@run null
+            val ordered = jobsDao.getOrdered()
+            if (ordered.isEmpty()) return@run null
+            val doneIds = resultsDao.doneIds().toSet()
+            inputFiles.sweepOrphans(ordered.map { it.jobId }.toSet())
             if (state.running) {
-                // Stale-running self-heal (same as enqueueImmediate below): KEEP
-                // is a no-op when the worker is alive, a relaunch when it died.
-                // Repair a wedged pointer first (out of bounds or aimed at an
-                // already-done job); a healthy pointer is left untouched so a
-                // live worker is never rewound.
-                val results = decodeQueueResults(state.resultsJson)
-                val repaired = repairRunningPointer(state, jobs, results.map { it.jobId }.toSet())
-                if (repaired != null) dao.save(repaired)
-                val fresh = repaired ?: state
-                return@run WorkerLaunch(fresh.host, fresh.jobsJson, fresh.origin, ExistingWorkPolicy.KEEP)
+                val repaired = repairExecuting(state, ordered, doneIds)
+                if (repaired != state.executingJobId) dao.save(state.copy(executingJobId = repaired))
+                val fresh = state.copy(executingJobId = repaired)
+                return@run WorkerLaunch(fresh.host, fresh.origin, ExistingWorkPolicy.KEEP)
             }
-            val doneIds = decodeQueueResults(state.resultsJson).map { it.jobId }.toSet()
-            // Never trust the stored pointer: re-derive the first pending job
-            // (stale values after clears/stages used to start mid-list or
-            // re-run done jobs). Batch scope is frozen here: TODO at launch,
-            // DONE excluded.
-            val firstPending = jobs.indexOfFirst { it.id !in doneIds }
-            if (firstPending < 0) return@run null
-            val pendingCount = jobs.count { it.id !in doneIds }
+            val firstPending = ordered.firstOrNull { it.jobId !in doneIds }
+                ?: return@run null
+            val pendingCount = ordered.count { it.jobId !in doneIds }
             Log.d(
                 QueueLogTag,
-                "start: firstPending=$firstPending pending=$pendingCount jobs=${jobs.map { it.id }}",
+                "start: firstPending=${firstPending.jobId} pending=$pendingCount jobs=${ordered.map { it.jobId }}",
             )
             dao.save(
                 state.copy(
                     running = true,
-                    currentIndex = firstPending,
+                    executingJobId = firstPending.jobId,
                     jobProgress = 0f,
                     batchTotal = pendingCount,
                     batchDone = 0,
                 ),
             )
-            WorkerLaunch(state.host, state.jobsJson, state.origin, ExistingWorkPolicy.REPLACE)
+            WorkerLaunch(state.host, state.origin, ExistingWorkPolicy.REPLACE)
         }
         if (launch != null) {
-            launchWorker(launch.host, launch.jobsJson, launch.origin, launch.policy)
+            launchWorker(launch.host, launch.origin, launch.policy)
         }
     }
 
@@ -313,247 +269,233 @@ open class DefaultQueueRepository @Inject constructor(
         require(jobs.isNotEmpty())
         val launch: WorkerLaunch? = tx.run {
             val state = dao.get()
-            val currentJobs = decodeQueueJobs(state?.jobsJson)
-            if (state != null && state.running && currentJobs.isNotEmpty()) {
+            val ordered = jobsDao.getOrdered()
+            val host = state?.host?.takeIf { it.isNotBlank() }
+                ?: connectionRepository.observe().first().webUiBaseUrl()
+            if (state != null && state.running && ordered.isNotEmpty()) {
                 // Insert right after the currently executing job; the worker
-                // re-reads the job list from the DB every iteration. Always
+                // picks the next pending row from the DB every iteration. Always
                 // re-enqueue with KEEP: no-op when the worker is alive, relaunch
                 // when it died leaving a stale running flag.
-                val results = decodeQueueResults(state.resultsJson)
-                val repaired =
-                    repairRunningPointer(state, currentJobs, results.map { it.jobId }.toSet())
-                val base = repaired ?: state
-                val at = (base.currentIndex + 1).coerceIn(0, currentJobs.size)
-                val merged = currentJobs.take(at) + jobs + currentJobs.drop(at)
-                val mergedJson = encodeQueueJobs(merged)
-                dao.save(
-                    base.copy(
-                        jobsJson = mergedJson,
-                        total = merged.size,
-                        batchTotal = base.batchTotal + jobs.size,
-                    ),
-                )
-                return@run WorkerLaunch(base.host, mergedJson, base.origin, ExistingWorkPolicy.KEEP)
-            } else if (state != null && currentJobs.isNotEmpty()) {
+                val doneIds = resultsDao.doneIds().toSet()
+                val repaired = repairExecuting(state, ordered, doneIds)
+                val base = if (repaired != state.executingJobId) {
+                    dao.save(state.copy(executingJobId = repaired))
+                    state.copy(executingJobId = repaired)
+                } else {
+                    state
+                }
+                val execIdx = ordered.indexOfFirst { it.jobId == base.executingJobId }
+                val at = if (execIdx < 0) ordered.size else execIdx + 1
+                val merged = ordered.toMutableList()
+                jobs.forEachIndexed { i, job ->
+                    merged.add((at + i).coerceIn(0, merged.size), job.toEntity(0))
+                }
+                merged.forEachIndexed { i, e -> merged[i] = e.copy(sortOrder = i) }
+                jobsDao.upsertAll(merged)
+                dao.save(base.copy(batchTotal = base.batchTotal + jobs.size))
+                return@run WorkerLaunch(base.host, base.origin, ExistingWorkPolicy.KEEP)
+            } else if (state != null && ordered.isNotEmpty()) {
                 // Idle with an existing queue: append behind existing jobs and
-                // start. Pointer and batch scope are derived from results, so a
-                // stale pointer (e.g. past-the-end after older builds) can
-                // neither skip jobs nor re-run done ones.
-                val host = connectionRepository.observe().first().webUiBaseUrl()
-                val merged = currentJobs + jobs
-                val mergedJson = encodeQueueJobs(merged)
-                val mergedResults = decodeQueueResults(state.resultsJson)
-                val doneIds = mergedResults.map { it.jobId }.toSet()
-                val firstPending = merged.indexOfFirst { it.id !in doneIds }
-                val pendingCount = merged.count { it.id !in doneIds }
+                // start. Batch scope is derived from results.
+                val mergedResults = doneIdsOf()
+                val doneIds = mergedResults.toSet()
+                val base = jobsDao.maxOrder()
+                jobsDao.upsertAll(jobs.mapIndexed { i, job -> job.toEntity(base + 1 + i) })
+                val all = jobsDao.getOrdered()
+                val firstPending = all.firstOrNull { it.jobId !in doneIds }
+                val pendingCount = all.count { it.jobId !in doneIds }
                 Log.d(
                     QueueLogTag,
-                    "enqueueImmediate idle: firstPending=$firstPending pending=$pendingCount",
+                    "enqueueImmediate idle: firstPending=${firstPending?.jobId} pending=$pendingCount",
                 )
                 dao.save(
                     state.copy(
                         running = true,
-                        currentIndex = if (firstPending < 0) merged.size else firstPending,
-                        total = merged.size,
+                        executingJobId = firstPending?.jobId,
                         origin = origin,
                         host = host,
-                        jobsJson = mergedJson,
                         jobProgress = 0f,
                         batchTotal = pendingCount,
                         batchDone = 0,
                     ),
                 )
-                if (firstPending < 0) return@run null
-                return@run WorkerLaunch(host, mergedJson, origin, ExistingWorkPolicy.REPLACE)
+                if (firstPending == null) return@run null
+                return@run WorkerLaunch(host, origin, ExistingWorkPolicy.REPLACE)
             } else {
-                val host = connectionRepository.observe().first().webUiBaseUrl()
-                val jobsJson = encodeQueueJobs(jobs)
+                val target = state ?: QueueStateEntity(
+                    running = false,
+                    executingJobId = null,
+                    origin = origin,
+                    host = host,
+                )
+                jobsDao.upsertAll(jobs.mapIndexed { i, job -> job.toEntity(i) })
                 dao.save(
-                    QueueStateEntity(
+                    target.copy(
                         running = true,
-                        currentIndex = 0,
-                        total = jobs.size,
+                        executingJobId = jobs.first().id,
                         origin = origin,
                         host = host,
-                        jobsJson = jobsJson,
-                        resultsJson = "[]",
                         jobProgress = 0f,
                         batchTotal = jobs.size,
                         batchDone = 0,
                     ),
                 )
-                return@run WorkerLaunch(host, jobsJson, origin, ExistingWorkPolicy.REPLACE)
+                return@run WorkerLaunch(host, origin, ExistingWorkPolicy.REPLACE)
             }
         }
         if (launch != null) {
-            launchWorker(launch.host, launch.jobsJson, launch.origin, launch.policy)
+            launchWorker(launch.host, launch.origin, launch.policy)
         }
     }
 
-    override suspend fun removeJob(jobId: String): Boolean = tx.run {
-        val state = dao.get() ?: return@run false
-        val jobs = decodeQueueJobs(state.jobsJson)
-        val index = jobs.indexOfFirst { it.id == jobId }
-        if (index < 0) return@run false
-        if (state.running && index == state.currentIndex) return@run false
-        val results = decodeQueueResults(state.resultsJson)
-        val newJobs = jobs.filterIndexed { i, _ -> i != index }
-        val newResults = results.filter { it.jobId != jobId }
-        val newIndex = if (index < state.currentIndex) {
-            state.currentIndex - 1
-        } else {
-            minOf(state.currentIndex, newJobs.size)
+    override suspend fun removeJob(jobId: String): Boolean {
+        val removed = tx.run {
+            val state = dao.get() ?: return@run false
+            val entity = jobsDao.getById(jobId) ?: return@run false
+            if (state.running && state.executingJobId == jobId) return@run false
+            val doneIds = resultsDao.doneIds().toSet()
+            val isDone = jobId in doneIds
+            jobsDao.deleteById(jobId)
+            resultsDao.deleteById(jobId)
+            if (!isDone && state.running) {
+                val execOrder = jobsDao.getOrdered()
+                    .indexOfFirst { it.jobId == state.executingJobId }
+                val removedOrder = entity.sortOrder
+                if (removedOrder > execOrder) {
+                    dao.save(
+                        state.copy(
+                            batchTotal = maxOf(state.batchDone, state.batchTotal - 1),
+                        ),
+                    )
+                }
+            }
+            true
         }
-        // Removing an upcoming (result-less, after the pointer) job while
-        // running shrinks the launched batch; past DONE removals are outside
-        // the batch and leave counters alone.
-        val upcomingRemoved =
-            state.running && index > state.currentIndex && results.none { it.jobId == jobId }
-        val newBatchTotal = if (upcomingRemoved) {
-            maxOf(state.batchDone, state.batchTotal - 1)
-        } else {
-            state.batchTotal
-        }
-        dao.save(
-            state.copy(
-                jobsJson = encodeQueueJobs(newJobs),
-                resultsJson = encodeQueueResults(newResults),
-                total = newJobs.size,
-                currentIndex = newIndex,
-                batchTotal = newBatchTotal,
-            ),
-        )
-        true
+        if (removed) inputFiles.deleteJob(jobId)
+        return removed
     }
 
     override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean = tx.run {
         val state = dao.get() ?: return@run false
-        val jobs = decodeQueueJobs(state.jobsJson)
-        if (jobs.isEmpty()) return@run false
-        val doneIds = decodeQueueResults(state.resultsJson).map { it.jobId }.toSet()
-        val pendingSlots = jobs.mapIndexedNotNull { i, job -> i.takeIf { job.id !in doneIds } }
-        if (pendingSlots.isEmpty()) return@run false
-        val fromPos = pendingSlots.indexOfFirst { jobs[it].id == jobId }
+        val ordered = jobsDao.getOrdered()
+        if (ordered.isEmpty()) return@run false
+        val doneIds = resultsDao.doneIds().toSet()
+        val pending = ordered.filter { it.jobId !in doneIds }
+        if (pending.isEmpty()) return@run false
+        val fromPos = pending.indexOfFirst { it.jobId == jobId }
         if (fromPos < 0) return@run false
         // Movable window: idle allows any pending slot; running pins the
-        // executing slot (and everything before it) — only later pending
-        // slots may be permuted, in place, so currentIndex stays valid.
+        // executing slot — only later pending slots may be permuted.
         val firstMovable = if (state.running) {
-            val execPos = pendingSlots.indexOf(state.currentIndex)
+            val execPos = pending.indexOfFirst { it.jobId == state.executingJobId }
             if (execPos < 0) return@run false
             execPos + 1
         } else {
             0
         }
         if (fromPos < firstMovable) return@run false
-        if (toPendingIndex < firstMovable || toPendingIndex >= pendingSlots.size) return@run false
+        if (toPendingIndex < firstMovable || toPendingIndex >= pending.size) return@run false
         if (fromPos == toPendingIndex) return@run true
-        val windowJobs = pendingSlots.subList(firstMovable, pendingSlots.size)
-            .map { jobs[it] }.toMutableList()
-        val moving = windowJobs.removeAt(fromPos - firstMovable)
-        windowJobs.add(toPendingIndex - firstMovable, moving)
-        val newJobs = jobs.toMutableList()
-        pendingSlots.subList(firstMovable, pendingSlots.size).forEachIndexed { k, slot ->
-            newJobs[slot] = windowJobs[k]
-        }
-        dao.save(state.copy(jobsJson = encodeQueueJobs(newJobs)))
+        val window = pending.toMutableList()
+        val moving = window.removeAt(fromPos)
+        window.add(toPendingIndex, moving)
+        // Rebuild full order: done rows stay fixed, reordered pending goes
+        // into pending slots in order; then dense sortOrder rewrite.
+        val result = ordered.toMutableList()
+        val slots = ordered.mapIndexedNotNull { i, e -> i.takeIf { e.jobId !in doneIds } }
+        slots.forEachIndexed { k, slot -> result[slot] = window[k] }
+        result.forEachIndexed { i, e -> result[i] = e.copy(sortOrder = i) }
+        jobsDao.upsertAll(result)
         true
     }
 
     override suspend fun cancel() {
         tx.run {
-            dao.get()?.let { dao.save(it.copy(running = false)) }
+            dao.get()?.let { dao.save(it.copy(running = false, executingJobId = null)) }
         }
         WorkManager.getInstance(context).cancelUniqueWork(GenerationWorker.UNIQUE_QUEUE)
     }
 
     override suspend fun clearCompleted() {
-        tx.run {
-            val state = dao.get() ?: return@run
-            val jobs = decodeQueueJobs(state.jobsJson)
-            val results = decodeQueueResults(state.resultsJson)
-            val doneIds = results.map { it.jobId }.toSet()
-            // Track the executing job by id (not position): DONE rows above
-            // the pointer disappear, so a positional pointer would slide down
-            // and mislabel/skip the rest of the queue.
-            val executingId = if (state.running) jobs.getOrNull(state.currentIndex)?.id else null
-            val newJobs = jobs.filter { it.id !in doneIds }
-            val newResults = results.filter { it.jobId !in doneIds }
-            val newIndex = if (state.running && executingId != null) {
-                val at = newJobs.indexOfFirst { it.id == executingId }
-                if (at >= 0) at else minOf(state.currentIndex, newJobs.size)
-            } else {
-                // Idle: everything left is pending, pointer restarts at head
-                // (start() re-derives it anyway).
-                0
+        val removedIds = tx.run {
+            val state = dao.get() ?: return@run emptyList()
+            val doneIds = resultsDao.doneIds().toSet()
+            if (doneIds.isEmpty()) return@run emptyList()
+            val jobs = jobsDao.getOrdered()
+            val toDelete = jobs.filter { it.jobId in doneIds }.map { it.jobId }
+            if (toDelete.isNotEmpty()) {
+                jobsDao.deleteByIds(toDelete)
+                resultsDao.deleteByIds(toDelete)
             }
-            Log.d(
-                QueueLogTag,
-                "clearCompleted: removed=${jobs.size - newJobs.size} index ${state.currentIndex} -> $newIndex",
-            )
-            dao.save(
-                state.copy(
-                    jobsJson = encodeQueueJobs(newJobs),
-                    resultsJson = encodeQueueResults(newResults),
-                    total = newJobs.size,
-                    currentIndex = newIndex,
-                ),
-            )
+            toDelete
         }
+        removedIds.forEach { inputFiles.deleteJob(it) }
     }
 
     override suspend fun clearPending() {
-        tx.run {
-            val state = dao.get() ?: return@run
-            val jobs = decodeQueueJobs(state.jobsJson)
-            val results = decodeQueueResults(state.resultsJson)
+        val removedIds = tx.run {
+            val state = dao.get() ?: return@run emptyList()
+            val ordered = jobsDao.getOrdered()
+            val doneIds = resultsDao.doneIds().toSet()
             if (!state.running) {
-                val doneIds = results.map { it.jobId }.toSet()
-                val newJobs = jobs.filter { it.id in doneIds }
-                dao.save(
-                    state.copy(
-                        jobsJson = encodeQueueJobs(newJobs),
-                        total = newJobs.size,
-                        currentIndex = 0,
-                    ),
-                )
+                val toDelete = ordered.filter { it.jobId !in doneIds }.map { it.jobId }
+                if (toDelete.isNotEmpty()) {
+                    jobsDao.deleteByIds(toDelete)
+                }
+                toDelete
             } else {
-                val keep = jobs.take((state.currentIndex + 1).coerceIn(0, jobs.size))
-                val removed = jobs.drop(keep.size)
-                val newResults = results.filter { r -> removed.none { it.id == r.jobId } }
-                // Dropped upcoming jobs leave the launched batch; the counter
-                // never sinks below already-completed so x/y still closes at 100%.
-                val removedUpcoming = removed.count { job ->
-                    results.none { it.jobId == job.id }
+                val execIdx = ordered.indexOfFirst { it.jobId == state.executingJobId }
+                val keep = if (execIdx < 0) ordered else ordered.take(execIdx + 1)
+                val removed = if (execIdx < 0) ordered else ordered.drop(keep.size)
+                val removedUpcoming = removed.count { it.jobId !in doneIds }
+                // Drop the whole tail (including done rows of future jobs —
+                // their results must not dangle without jobs).
+                val toDelete = removed.map { it.jobId }
+                if (toDelete.isNotEmpty()) {
+                    jobsDao.deleteByIds(toDelete)
+                    resultsDao.deleteByIds(toDelete)
                 }
                 val newBatchTotal = maxOf(state.batchDone, state.batchTotal - removedUpcoming)
                 Log.d(
                     QueueLogTag,
                     "clearPending running: keep=${keep.size} removedUpcoming=$removedUpcoming batch ${state.batchDone}/${state.batchTotal} -> $newBatchTotal",
                 )
-                dao.save(
-                    state.copy(
-                        jobsJson = encodeQueueJobs(keep),
-                        resultsJson = encodeQueueResults(newResults),
-                        total = keep.size,
-                        batchTotal = newBatchTotal,
-                    ),
-                )
+                dao.save(state.copy(batchTotal = newBatchTotal))
+                // Delete input files only for removed pending (keep executing + done).
+                toDelete
             }
         }
+        removedIds.forEach { inputFiles.deleteJob(it) }
+    }
+
+    private suspend fun doneIdsOf(): List<String> = resultsDao.doneIds()
+
+    /** Re-derives executing id: null when idle/empty/done; first pending otherwise. */
+    private fun repairExecuting(
+        state: QueueStateEntity,
+        ordered: List<QueueJobEntity>,
+        doneIds: Set<String>,
+    ): String? {
+        if (!state.running) return null
+        val cur = state.executingJobId
+        if (cur != null && ordered.any { it.jobId == cur } && cur !in doneIds) return cur
+        val firstPending = ordered.firstOrNull { it.jobId !in doneIds }
+        Log.d(QueueLogTag, "repair executing $cur -> ${firstPending?.jobId} (jobs=${ordered.map { it.jobId }})")
+        return firstPending?.jobId
     }
 
     protected open fun launchWorker(
         host: String,
-        jobsJson: String,
         origin: String,
         policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
     ) {
+        // C-1: inputData carries only host/origin (no jobsJson — WorkManager 10KB cap).
+        // Job list lives in Room; worker re-reads the next pending row every iteration.
         val request = OneTimeWorkRequestBuilder<GenerationWorker>()
             .setInputData(
                 workDataOf(
                     GenerationWorker.KEY_HOST to host,
-                    GenerationWorker.KEY_JOBS to jobsJson,
                     GenerationWorker.KEY_ORIGIN to origin,
                 ),
             )

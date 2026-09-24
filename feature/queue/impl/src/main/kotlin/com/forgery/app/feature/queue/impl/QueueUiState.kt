@@ -26,8 +26,10 @@ sealed interface QueueUiState {
         /** Job currently executing on the server; pinned (no delete/move). */
         val executingJobId: String?
             get() {
-                val snap = snapshot
-                return if (snap?.running == true) jobs.getOrNull(snap.currentIndex)?.id else null
+                val id = snapshot?.takeIf { it.running }?.executingJobId ?: return null
+                if (jobs.none { it.id == id }) return null
+                if (results.any { it.jobId == id }) return null
+                return id
             }
 
         fun statusOf(job: QueueJob): JobStatus {

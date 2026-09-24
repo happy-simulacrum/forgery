@@ -109,11 +109,11 @@ private class FakeQueueRepository : QueueRepository {
     }
     override suspend fun start() {
         starts++
-        snapshot.value = QueueSnapshot(running = true, currentIndex = 0, total = 1, origin = "q", stopReason = null)
+        snapshot.value = QueueSnapshot(running = true, executingJobId = "1", total = 1, origin = "q", stopReason = null)
     }
     override suspend fun enqueueImmediate(jobs: List<QueueJob>, origin: String) {
         immediate += jobs to origin
-        snapshot.value = QueueSnapshot(running = true, currentIndex = 0, total = jobs.size, origin = origin, stopReason = null)
+        snapshot.value = QueueSnapshot(running = true, executingJobId = null, total = jobs.size, origin = origin, stopReason = null)
     }
     override suspend fun cancel() {
         snapshot.value = snapshot.value?.copy(running = false)
@@ -511,7 +511,7 @@ class GenerateViewModelTest {
         queue.emitSnapshot(
             QueueSnapshot(
                 running = true,
-                currentIndex = 1,
+                executingJobId = "2",
                 total = 4,
                 origin = "q",
                 stopReason = null,
@@ -524,7 +524,7 @@ class GenerateViewModelTest {
         assertTrue(state.queueRunning)
         val snap = state.queueSnapshot!!
         assertEquals(0.42f, snap.jobProgress, 1e-6f)
-        assertEquals(1, snap.currentIndex)
+        assertEquals("2", snap.executingJobId)
         assertEquals(4, snap.total)
         // Bar math: 42% label, job 2/4.
         assertEquals(42, ((snap.jobProgress * 100).toInt()))

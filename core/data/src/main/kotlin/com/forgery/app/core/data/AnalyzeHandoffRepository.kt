@@ -2,6 +2,7 @@ package com.forgery.app.core.data
 
 import com.forgery.app.core.model.RestoredParams
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,10 +18,8 @@ class AnalyzeHandoffRepository @Inject constructor() {
         state.value = p
     }
 
-    /** Returns the pending params and clears the slot. */
+    /** Returns the pending params and clears the slot (atomic). */
     fun consume(): RestoredParams? {
-        val pending = state.value
-        state.value = null
-        return pending
+        return state.getAndUpdate { null }
     }
 }

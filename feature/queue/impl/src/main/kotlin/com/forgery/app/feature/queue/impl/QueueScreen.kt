@@ -551,7 +551,7 @@ private fun QueueScreenPreview() {
     ForgeryTheme {
         QueueScreen(
             uiState = QueueUiState.Success(
-                snapshot = QueueSnapshot(running = true, currentIndex = 1, total = 3, origin = "queue", stopReason = null),
+                snapshot = QueueSnapshot(running = true, executingJobId = "2", total = 3, origin = "queue", stopReason = null),
                 jobs = listOf(
                     QueueJob("1", "a cat", "txt", "m.safetensors", "{}"),
                     QueueJob("2", "a dog", "txt", "m.safetensors", "{}"),

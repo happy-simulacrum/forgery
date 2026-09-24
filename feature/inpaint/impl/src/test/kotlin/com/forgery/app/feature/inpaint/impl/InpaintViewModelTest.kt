@@ -5,6 +5,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.data.GenerationRepository
 import com.forgery.app.core.data.ModulesSelectionRepository
+import com.forgery.app.core.data.QueueInputs
 import com.forgery.app.core.data.QueueRepository
 import com.forgery.app.core.model.GenerationMode
 import com.forgery.app.core.model.QueueJob
@@ -74,6 +75,14 @@ private class FakeQueueRepository : QueueRepository {
     override suspend fun moveJob(jobId: String, toPendingIndex: Int): Boolean = true
 }
 
+private class FakeQueueInputs : QueueInputs {
+    override fun saveBase64(jobId: String, initB64: String, maskB64: String?): Pair<String, String?> =
+        "/inputs/$jobId/init.png" to maskB64?.let { "/inputs/$jobId/mask.png" }
+    override fun loadBase64OrNull(path: String?): String? = path?.let { "b64" }
+    override fun deleteJob(jobId: String) = Unit
+    override fun sweepOrphans(activeIds: Set<String>) = Unit
+}
+
 private class FakeModulesSelectionRepository : ModulesSelectionRepository {
     private val stored = mutableMapOf<GenerationMode, MutableStateFlow<List<String>>>()
 
@@ -98,7 +107,8 @@ class InpaintViewModelTest {
         reader: ImageAttachmentReader = FakeImageReader(),
         savedStateHandle: SavedStateHandle = SavedStateHandle(),
         selection: ModulesSelectionRepository = FakeModulesSelectionRepository(),
-    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection)
+        inputs: QueueInputs = FakeQueueInputs(),
+    ) = InpaintViewModel(savedStateHandle, reader, FakeGenerationRepository(), queue, selection, inputs)
 
     private suspend fun StateFlow<InpaintUiState>.success(): InpaintUiState.Success =
         first { it is InpaintUiState.Success } as InpaintUiState.Success
@@ -222,7 +232,7 @@ class InpaintViewModelTest {
 
     @Test
     fun `enqueue while running reports behind current job`() = runTest {        queue.snapshot.value =
-            QueueSnapshot(running = true, currentIndex = 0, total = 1, origin = "q", stopReason = null)
+            QueueSnapshot(running = true, executingJobId = "1", total = 1, origin = "q", stopReason = null)
         val vm = viewModel()
         vm.uiState.first { it is InpaintUiState.Success && it.queueRunning }
         vm.onAction(InpaintAction.PickResult("content://img/1"))
