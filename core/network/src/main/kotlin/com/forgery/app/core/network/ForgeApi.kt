@@ -108,16 +108,54 @@ class ForgeHeadersInterceptor @Inject constructor() : Interceptor {
 class ForgeApiFactory @Inject constructor(
     private val headers: ForgeHeadersInterceptor,
 ) {
-    fun create(baseUrl: String, cfClientId: String = "", cfClientSecret: String = ""): ForgeService {
-        headers.cfClientId = cfClientId
-        headers.cfClientSecret = cfClientSecret
-        val url = baseUrl.trimEnd('/') + "/"
-        val client = OkHttpClient.Builder()
-            .addInterceptor(headers)
-            .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BASIC))
+    /**
+     * Set from [com.forgery.app.app.ForgeryApp] based on the debuggable flag:
+     * HTTP logging rides into release builds otherwise (this module has no
+     * BuildConfig / debug source set). Defaults to true = historic behavior.
+     */
+    var debugLogging: Boolean = true
+
+    /**
+     * Shared clients (was: a new OkHttpClient per [create] call — a fresh
+     * connection pool + dispatcher per request, amplifying server backlog
+     * pressure while the Neo server is stuck in a model reload).
+     */
+    private val logging: HttpLoggingInterceptor by lazy {
+        HttpLoggingInterceptor().setLevel(
+            if (debugLogging) HttpLoggingInterceptor.Level.BASIC
+            else HttpLoggingInterceptor.Level.NONE,
+        )
+    }
+
+    private fun baseBuilder() = OkHttpClient.Builder()
+        .addInterceptor(headers)
+        .addInterceptor(logging)
+        .retryOnConnectionFailure(true)
+
+    /** Generation client: infinite read — txt2img/img2img may run for minutes. */
+    private val generationClient: OkHttpClient by lazy {
+        baseBuilder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
             .build()
+    }
+
+    /**
+     * Control-plane client: short timeouts for options/progress/catalog.
+     * A blocked Neo server (mid-reload) must fail fast here instead of
+     * burning the 15s connect budget on every poll iteration.
+     */
+    private val controlClient: OkHttpClient by lazy {
+        baseBuilder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun serviceFor(baseUrl: String, cfClientId: String, cfClientSecret: String, client: OkHttpClient): ForgeService {
+        headers.cfClientId = cfClientId
+        headers.cfClientSecret = cfClientSecret
+        val url = baseUrl.trimEnd('/') + "/"
         return Retrofit.Builder()
             .baseUrl(url)
             .client(client)
@@ -125,6 +163,13 @@ class ForgeApiFactory @Inject constructor(
             .build()
             .create(ForgeService::class.java)
     }
+
+    fun create(baseUrl: String, cfClientId: String = "", cfClientSecret: String = ""): ForgeService =
+        serviceFor(baseUrl, cfClientId, cfClientSecret, generationClient)
+
+    /** Short-timeout variant for control-plane calls (options/progress/catalog). */
+    fun createControl(baseUrl: String, cfClientId: String = "", cfClientSecret: String = ""): ForgeService =
+        serviceFor(baseUrl, cfClientId, cfClientSecret, controlClient)
 
     /** Applies Neo sanitizer to a txt2img/img2img payload copy. */
     fun sanitized(payload: Map<String, Any?>): Map<String, Any?> {

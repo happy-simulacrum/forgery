@@ -53,6 +53,8 @@ private class FakeForgeService(
     var progress: Double = 0.0,
     /** Raw body for POST /options: Neo answers `null` (set_config returns None). */
     var optionsBody: String = "{}",
+    /** Transport failures to throw from txt2img before succeeding (retry tests). */
+    var txtFailures: Int = 0,
     var schedulers: List<JsonObject> = listOf(
         buildJsonObject { put("name", "karras"); put("label", "Karras") },
     ),
@@ -122,6 +124,10 @@ private class FakeForgeService(
 
     override suspend fun txt2img(body: JsonObject): JsonObject {
         lastTxtBody = body
+        if (txtFailures > 0) {
+            txtFailures--
+            throw java.io.IOException("failed to connect after 15000ms")
+        }
         return buildJsonObject {
             putJsonArray("images") { images.forEach { add(it) } }
         }
@@ -235,6 +241,36 @@ class GenerationRepositoryTest {
         val result = repo(fake).ensureAdditionalModules(listOf("ae.safetensors"))
         assertTrue(result is Result.Success)
         assertFalse(fake.postedOptions.isEmpty())
+    }
+
+    @Test
+    fun `ensureAdditionalModules syncs once per distinct selection`() = runTest {
+        val fake = FakeForgeService(serverModules = emptyList())
+        val r = repo(fake)
+        val modules = listOf("ae.safetensors")
+        assertTrue(r.ensureAdditionalModules(modules) is Result.Success)
+        assertEquals(1, fake.postedOptions.size)
+        // Same selection again: no GET storm, no second POST (server reload).
+        assertTrue(r.ensureAdditionalModules(modules) is Result.Success)
+        assertEquals(1, fake.postedOptions.size)
+        // Changed selection: exactly one more POST.
+        assertTrue(r.ensureAdditionalModules(emptyList()) is Result.Success)
+        assertEquals(2, fake.postedOptions.size)
+    }
+
+    @Test
+    fun `txt2img retries transient transport errors`() = runTest {
+        val fake = FakeForgeService(txtFailures = 2)
+        val result = repo(fake).txt2img(mapOf("prompt" to "hi"))
+        assertTrue(result is Result.Success)
+        assertEquals(listOf("aGVsbG8="), (result as Result.Success).data)
+    }
+
+    @Test
+    fun `txt2img gives up after repeated transport errors`() = runTest {
+        val fake = FakeForgeService(txtFailures = 10)
+        val result = repo(fake).txt2img(mapOf("prompt" to "hi"))
+        assertTrue(result is Result.Error)
     }
 
     @Test

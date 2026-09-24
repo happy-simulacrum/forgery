@@ -50,6 +50,12 @@ interface GenerationRepository {
     companion object {
         const val MODEL_ALIGN_ATTEMPTS = 40
         const val MODEL_ALIGN_DELAY_MS = 1_500L
+        /** Module sync budget: one POST + short poll (was 40 x 1.5s per job). */
+        const val MODULE_SYNC_ATTEMPTS = 10
+        const val MODULE_SYNC_DELAY_MS = 3_000L
+        /** Generation POST retries on transport errors (resolver fetchWithRetry). */
+        const val GENERATION_RETRIES = 5
+        const val GENERATION_RETRY_BASE_MS = 1_000L
     }
 }
 
@@ -62,6 +68,18 @@ class DefaultGenerationRepository @Inject constructor(
     /** Test seam: replaced with a fake [ForgeService] in unit tests. */
     var serviceProvider: (suspend (String) -> ForgeService)? = null
 
+    /**
+     * Last server-global module selection synced via POST /options, per host.
+     * A Neo `forge_additional_modules` POST is a full model reload (tens of
+     * seconds on CPU/MPS servers, blocking /progress for every client), so it
+     * must happen at most once per distinct selection — not on every job.
+     * Per-request `override_settings` (PayloadBuilder) masks the global
+     * between syncs; an emptied picker still clears the stale global once.
+     */
+    @Volatile private var lastModulesHost: String? = null
+    @Volatile private var lastSyncedModules: List<String>? = null
+
+    /** Generation client (infinite read): txt2img/img2img only. */
     private suspend fun service(): ForgeService {
         val config = connectionRepository.observe().first()
         val baseUrl = config.webUiBaseUrl()
@@ -69,12 +87,45 @@ class DefaultGenerationRepository @Inject constructor(
             ?: forgeApiFactory.create(baseUrl, config.cfClientId, config.cfClientSecret)
     }
 
+    /** Control-plane client (short timeouts): options/progress/catalog. */
+    private suspend fun controlService(): ForgeService {
+        val config = connectionRepository.observe().first()
+        val baseUrl = config.webUiBaseUrl()
+        return serviceProvider?.invoke(baseUrl)
+            ?: forgeApiFactory.createControl(baseUrl, config.cfClientId, config.cfClientSecret)
+    }
+
     private suspend fun <T> call(block: suspend (ForgeService) -> T): Result<T> =
         try {
-            Result.Success(block(service()))
+            Result.Success(block(controlService()))
         } catch (e: Exception) {
             Result.Error(e.message ?: e.toString(), e)
         }
+
+    /**
+     * Generation POST with transport-error retries (ports resolver
+     * `fetchWithRetry`: 5 attempts, 1s x 1.5 backoff). Retries only
+     * [java.io.IOException] (connect/timeout — the request never reached the
+     * server); HTTP/serialization errors fail immediately.
+     */
+    private suspend fun <T> callGeneration(block: suspend (ForgeService) -> T): Result<T> {
+        var attempt = 0
+        var backoff = GenerationRepository.GENERATION_RETRY_BASE_MS
+        while (true) {
+            try {
+                return Result.Success(block(service()))
+            } catch (e: java.io.IOException) {
+                attempt++
+                if (attempt > GenerationRepository.GENERATION_RETRIES) {
+                    return Result.Error(e.message ?: e.toString(), e)
+                }
+                delay(backoff)
+                backoff = (backoff * 1.5).toLong()
+            } catch (e: Exception) {
+                return Result.Error(e.message ?: e.toString(), e)
+            }
+        }
+    }
 
     private suspend fun <T> callWithHost(
         block: suspend (ForgeService, String) -> T,
@@ -82,7 +133,7 @@ class DefaultGenerationRepository @Inject constructor(
         val config = connectionRepository.observe().first()
         val baseUrl = config.webUiBaseUrl()
         val api = serviceProvider?.invoke(baseUrl)
-            ?: forgeApiFactory.create(baseUrl, config.cfClientId, config.cfClientSecret)
+            ?: forgeApiFactory.createControl(baseUrl, config.cfClientId, config.cfClientSecret)
         Result.Success(block(api, baseUrl))
     } catch (e: Exception) {
         Result.Error(e.message ?: e.toString(), e)
@@ -176,28 +227,47 @@ class DefaultGenerationRepository @Inject constructor(
         // server-global instead of inheriting it (covers the cleared picker
         // and FLUX/QWEN jobs following an SDXL+VAE batch).
         // Server stores full paths in options; compare normalized basenames, order-insensitive.
+        // Syncs at most once per distinct selection per host: every sync is a
+        // full server-side model reload, and per-job reloads wedge the Neo
+        // server (/progress stops responding for all clients until restart).
         val want = modules.map { normalizeModelTitle(it) }.sorted()
         return try {
-            var attempts = 0
-            while (attempts < GenerationRepository.MODEL_ALIGN_ATTEMPTS) {
-                val current = when (val opts = call { it.options() }) {
+            val host = connectionRepository.observe().first().webUiBaseUrl()
+            if (lastModulesHost == host && lastSyncedModules == want) {
+                return Result.Success(Unit)
+            }
+            val current = when (val opts = call { it.options() }) {
+                is Result.Success -> opts.data.stringList("forge_additional_modules")
+                    .map { normalizeModelTitle(it) }.sorted()
+                is Result.Error -> return Result.Error(opts.message, opts.cause)
+                is Result.Loading -> emptyList()
+            }
+            if (current == want) {
+                lastModulesHost = host
+                lastSyncedModules = want
+                return Result.Success(Unit)
+            }
+            // Single POST (was: re-POST every 5th poll iteration), then bounded poll.
+            // Neo resolves basenames server-side (modules_change); post as selected.
+            val posted = call {
+                it.setOptions(mapOf("forge_additional_modules" to modules).toJsonObject()).close()
+            }
+            if (posted is Result.Error) return Result.Error(posted.message, posted.cause)
+            var attempts = 1
+            while (attempts < GenerationRepository.MODULE_SYNC_ATTEMPTS) {
+                delay(GenerationRepository.MODULE_SYNC_DELAY_MS)
+                val cur = when (val opts = call { it.options() }) {
                     is Result.Success -> opts.data.stringList("forge_additional_modules")
                         .map { normalizeModelTitle(it) }.sorted()
                     is Result.Error -> return Result.Error(opts.message, opts.cause)
                     is Result.Loading -> emptyList()
                 }
-                if (current == want) {
+                if (cur == want) {
+                    lastModulesHost = host
+                    lastSyncedModules = want
                     return Result.Success(Unit)
                 }
-                if (attempts % 5 == 0) {
-                    // Neo resolves basenames server-side (modules_change); post as selected.
-                    val posted = call {
-                        it.setOptions(mapOf("forge_additional_modules" to modules).toJsonObject()).close()
-                    }
-                    if (posted is Result.Error) return Result.Error(posted.message, posted.cause)
-                }
                 attempts++
-                delay(GenerationRepository.MODEL_ALIGN_DELAY_MS)
             }
             Result.Error("Timeout: server failed to load modules.")
         } catch (e: Exception) {
@@ -206,9 +276,9 @@ class DefaultGenerationRepository @Inject constructor(
     }
 
     override suspend fun txt2img(payload: Map<String, Any?>): Result<List<String>> =
-        call { api -> api.txt2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
+        callGeneration { api -> api.txt2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
     override suspend fun img2img(payload: Map<String, Any?>): Result<List<String>> =
-        call { api -> api.img2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
+        callGeneration { api -> api.img2img(forgeApiFactory.sanitized(payload).toJsonObject()).images() }
 
     override suspend fun progress(): Result<Double> = call { api ->
         api.progress().progressValue()

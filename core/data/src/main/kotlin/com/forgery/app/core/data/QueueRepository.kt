@@ -1,8 +1,11 @@
 package com.forgery.app.core.data
 
 import android.content.Context
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -361,6 +364,15 @@ open class DefaultQueueRepository @Inject constructor(
         policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
     ) {
         val request = OneTimeWorkRequestBuilder<GenerationWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build(),
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                10, java.util.concurrent.TimeUnit.SECONDS,
+            )
             .setInputData(
                 workDataOf(
                     GenerationWorker.KEY_HOST to host,

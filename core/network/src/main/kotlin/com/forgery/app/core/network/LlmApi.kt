@@ -49,12 +49,27 @@ fun JsonObject.llmFirstContent(): String {
 
 @Singleton
 class LlmApiFactory @Inject constructor() {
-    fun create(baseUrl: String): LlmService {
-        val client = OkHttpClient.Builder()
-            .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BASIC))
+    /**
+     * Mirrors [ForgeApiFactory.debugLogging]: set from the app module based
+     * on the debuggable flag so release builds stay quiet.
+     */
+    var debugLogging: Boolean = true
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor(
+                HttpLoggingInterceptor().setLevel(
+                    if (debugLogging) HttpLoggingInterceptor.Level.BASIC
+                    else HttpLoggingInterceptor.Level.NONE,
+                ),
+            )
+            .retryOnConnectionFailure(true)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
             .build()
+    }
+
+    fun create(baseUrl: String): LlmService {
         return Retrofit.Builder()
             .baseUrl(baseUrl.trimEnd('/') + "/")
             .client(client)
