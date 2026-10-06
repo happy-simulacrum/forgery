@@ -1,13 +1,17 @@
 package com.forgery.app.feature.gallery.impl
 
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
+import com.forgery.app.core.data.CollectionRepository
 import com.forgery.app.core.data.HistoryRepository
+import com.forgery.app.core.model.GalleryCollection
 import com.forgery.app.core.model.HistoryItem
 import com.forgery.app.core.testing.TestDispatcherRule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -65,7 +69,18 @@ class GalleryDetailViewModelTest {
     private fun viewModel(
         repo: FakeDetailHistoryRepository,
         id: Long = 7L,
-    ) = GalleryDetailViewModel(SavedStateHandle(mapOf("id" to id)), repo)
+        collections: FakeDetailCollectionRepository = FakeDetailCollectionRepository(),
+        collectionId: Long? = null,
+    ) = GalleryDetailViewModel(
+        SavedStateHandle(
+            buildMap<String, Any> {
+                put("id", id)
+                if (collectionId != null) put("collectionId", collectionId)
+            },
+        ),
+        repo,
+        collections,
+    )
 
     @Test
     fun `emits ids in order with page for route id`() = runTest {
@@ -179,6 +194,163 @@ class GalleryDetailViewModelTest {
         assertTrue(state.deleted)
     }
 
+    @Test
+    fun `collection scope uses collection ids instead of global`() = runTest {
+        val collections = FakeDetailCollectionRepository(
+            mapOf(1L to listOf(7L, 5L)),
+        )
+        val vm = viewModel(FakeDetailHistoryRepository(), id = 5L, collections = collections, collectionId = 1L)
+        val state = vm.uiState.firstSuccess()
+        assertEquals(listOf(7L, 5L), state.ids)
+        assertEquals(1, state.page)
+        assertEquals(5L, state.item?.id)
+    }
+
+    @Test
+    fun `create collection from detail`() = runTest {
+        val collections = FakeDetailCollectionRepository()
+        val vm = viewModel(FakeDetailHistoryRepository(), collections = collections)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryDetailAction.RequestCreateCollection)
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.Create)
+
+        vm.onAction(GalleryDetailAction.CollectionNameChanged(TextFieldValue("Trip")))
+        vm.onAction(GalleryDetailAction.ConfirmCreateCollection)
+
+        assertEquals(listOf("Trip" to listOf(7L)), collections.created)
+        assertNull(vm.uiState.firstSuccess().collectionDialog)
+    }
+
+    @Test
+    fun `add to collection from detail`() = runTest {
+        val collections = FakeDetailCollectionRepository(
+            mapOf(1L to listOf(9L)),
+        )
+        val vm = viewModel(FakeDetailHistoryRepository(), collections = collections)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryDetailAction.RequestAddToCollection)
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.AddTo)
+
+        vm.onAction(GalleryDetailAction.ConfirmAddToCollection(1L))
+
+        assertEquals(listOf(1L to listOf(7L)), collections.added)
+        assertNull(vm.uiState.firstSuccess().collectionDialog)
+    }
+
+    @Test
+    fun `remove from collection detaches image and lands on neighbor`() = runTest {
+        val collections = FakeDetailCollectionRepository(
+            mapOf(1L to listOf(7L, 5L)),
+        )
+        val vm = viewModel(FakeDetailHistoryRepository(), collections = collections, collectionId = 1L)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryDetailAction.RemoveFromCollection)
+
+        assertEquals(listOf(1L to listOf(7L)), collections.removed)
+        val state = vm.uiState.first {
+            it is GalleryDetailUiState.Success && it.ids == listOf(5L)
+        } as GalleryDetailUiState.Success
+        assertFalse(state.deleted)
+        assertEquals(5L, state.item?.id)
+    }
+
+    @Test
+    fun `remove last from collection marks deleted`() = runTest {
+        val collections = FakeDetailCollectionRepository(
+            mapOf(1L to listOf(7L)),
+        )
+        val vm = viewModel(FakeDetailHistoryRepository(), collections = collections, collectionId = 1L)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryDetailAction.RemoveFromCollection)
+
+        assertEquals(listOf(1L to listOf(7L)), collections.removed)
+        val state = vm.uiState.first {
+            it is GalleryDetailUiState.Success && it.deleted
+        } as GalleryDetailUiState.Success
+        assertTrue(state.ids.isEmpty())
+        assertNull(state.item)
+    }
+
+    @Test
+    fun `remove outside collection does nothing`() = runTest {
+        val collections = FakeDetailCollectionRepository(
+            mapOf(1L to listOf(7L, 5L)),
+        )
+        val vm = viewModel(FakeDetailHistoryRepository(), collections = collections)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryDetailAction.RemoveFromCollection)
+
+        assertTrue(collections.removed.isEmpty())
+        assertEquals(listOf(9L, 7L, 5L), vm.uiState.firstSuccess().ids)
+    }
+
     private suspend fun StateFlow<GalleryDetailUiState>.firstSuccess(): GalleryDetailUiState.Success =
         first { it is GalleryDetailUiState.Success } as GalleryDetailUiState.Success
+}
+
+private class FakeDetailCollectionRepository(
+    initialIds: Map<Long, List<Long>> = emptyMap(),
+) : CollectionRepository {
+    private val data = MutableStateFlow(initialIds)
+    val created = mutableListOf<Pair<String, List<Long>>>()
+    val added = mutableListOf<Pair<Long, List<Long>>>()
+    val removed = mutableListOf<Pair<Long, List<Long>>>()
+
+    override fun observeCollections(): Flow<List<GalleryCollection>> =
+        data.map { m -> m.map { (id, ids) -> GalleryCollection(id, "C$id", 0, ids.size, null) } }
+
+    override fun observeCollection(collectionId: Long): Flow<GalleryCollection?> =
+        data.map { m ->
+            m[collectionId]?.let { GalleryCollection(collectionId, "C$collectionId", 0, it.size, null) }
+        }
+
+    override fun observeItems(collectionId: Long, limit: Int, offset: Int): Flow<List<HistoryItem>> =
+        data.map { m ->
+            (m[collectionId] ?: emptyList()).drop(offset).take(limit).map {
+                HistoryItem(it, "/img$it.png", null, "{}", "today")
+            }
+        }
+
+    override fun observeIds(collectionId: Long): Flow<List<Long>> =
+        data.map { it[collectionId] ?: emptyList() }
+
+    override fun countInCollection(collectionId: Long): Flow<Int> =
+        data.map { (it[collectionId] ?: emptyList()).size }
+
+    override fun observeUnsorted(limit: Int, offset: Int): Flow<List<HistoryItem>> =
+        flowOf(emptyList())
+
+    override fun observeUnsortedIds(): Flow<List<Long>> = flowOf(emptyList())
+
+    override fun countUnsorted(): Flow<Int> = flowOf(0)
+
+    override fun observeCollectionsForImage(historyId: Long): Flow<List<GalleryCollection>> =
+        flowOf(emptyList())
+
+    override suspend fun createCollection(name: String, initialIds: List<Long>): Long {
+        created += name to initialIds
+        return 100L
+    }
+
+    override suspend fun rename(collectionId: Long, name: String) = Unit
+
+    override suspend fun deleteCollection(collectionId: Long) = Unit
+
+    override suspend fun addToCollection(collectionId: Long, historyIds: List<Long>) {
+        added += collectionId to historyIds
+    }
+
+    override suspend fun removeFromCollection(collectionId: Long, historyIds: List<Long>) {
+        removed += collectionId to historyIds
+        data.value = data.value + (
+            collectionId to (data.value[collectionId] ?: emptyList()).filterNot { it in historyIds }
+            )
+    }
+
+    override suspend fun reorder(collectionId: Long, orderedIds: List<Long>) = Unit
 }

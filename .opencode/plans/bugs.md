@@ -76,6 +76,14 @@ NEW — L-30 (ModulesRoute.modelTitle). H-3/H-11/H-12 переписаны по�
   `appendPrompt` try/catch + 1 ретрай, `flush` не чистит pending при ошибке + bounded retry (2), scope-хендлер от uncaught;
   коллеры Analyze/LoRA/Styles — runCatching с честными нотисами (`copyDone` эмитится и при фейле — UI не виснет,
   детали LoRA остаются открыты). Тесты: PromptDraftRepository 7/7 + VM-кейсы IOException.
+- H-13 [CONFIRMED] `QueueRepository.cancel()` (`QueueRepository.kt:471-492`) сбрасывает флаг и останавливает
+  воркер, но не чистит `queue_inputs/<jobId>/init.png + mask.png` и не зовет `sweepOrphans()` (он только в `start()`,
+  `QueueRepository.kt:296`). Воркер после `record()` входы тоже не удаляет (`GenerationWorker.kt:251-301`;
+  по решению воркер не трогаем). Частые отмены/фейлы инпейнтов копят сирот при "всегда очищенной" очереди —
+  на Pixel 9a замерен след ~167МБ (живой аудит `ForgeryStorage`: `queue_inputs=0` после ручной очистки,
+  installd data=119.6МБ против застывших 285.6МБ в diskstats). Чистят только `clearCompleted/clearPending/removeJob`.
+  Fix: `deleteJob`-проход по снятым джобам в `cancel()` и/или `sweepOrphans()` при старте приложения
+  (`ForgeryApp`, сейчас там только `sweepOrphanFiles` галереи).
 
 ## Medium (24)
 

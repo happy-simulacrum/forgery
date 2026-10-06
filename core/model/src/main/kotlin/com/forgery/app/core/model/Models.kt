@@ -51,6 +51,18 @@ data class HistoryItem(
     val date: String,
 )
 
+/** Gallery collection: N:M grouping of history items with explicit order. */
+data class GalleryCollection(
+    val id: Long = 0,
+    val name: String,
+    val createdAt: Long = 0,
+    val count: Int = 0,
+    val cover: HistoryItem? = null,
+)
+
+/** Virtual collection id for images that belong to no collection. */
+const val UNSORTED_COLLECTION_ID = -1L
+
 @Serializable
 data class QueueJob(
     val id: String,

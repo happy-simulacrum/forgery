@@ -1,7 +1,9 @@
 package com.forgery.app.feature.gallery.impl
 
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.forgery.app.core.data.CollectionRepository
 import com.forgery.app.core.data.HistoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -17,6 +19,7 @@ import javax.inject.Inject
 @HiltViewModel
 class GalleryViewModel @Inject constructor(
     private val historyRepository: HistoryRepository,
+    private val collectionRepository: CollectionRepository,
 ) : ViewModel() {
 
     companion object {
@@ -27,6 +30,9 @@ class GalleryViewModel @Inject constructor(
     private val selection = MutableStateFlow<Set<Long>>(emptySet())
     private val selectingFlow = MutableStateFlow(false)
     private val confirmFlow = MutableStateFlow<GalleryConfirm?>(null)
+    private val viewModeFlow = MutableStateFlow(GalleryViewMode.SOLO)
+    private val collectionDialogFlow = MutableStateFlow<GalleryCollectionDialog?>(null)
+    private val dialogInputFlow = MutableStateFlow(TextFieldValue(""))
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val pageItems = page.flatMapLatest { p ->
@@ -43,21 +49,62 @@ class GalleryViewModel @Inject constructor(
         SelectState(sel, selecting, confirm)
     }
 
-    val uiState: StateFlow<GalleryUiState> = combine(
+    private data class CollectionState(
+        val mode: GalleryViewMode = GalleryViewMode.SOLO,
+        val collections: List<com.forgery.app.core.model.GalleryCollection> = emptyList(),
+        val unsortedCount: Int = 0,
+        val dialog: GalleryCollectionDialog? = null,
+        val dialogInput: TextFieldValue = TextFieldValue(""),
+    )
+
+    private val collectionState = combine(
+        viewModeFlow,
+        collectionRepository.observeCollections(),
+        collectionRepository.countUnsorted(),
+        collectionDialogFlow,
+        dialogInputFlow,
+    ) { mode, collections, unsortedCount, dialog, input ->
+        CollectionState(mode, collections, unsortedCount, dialog, input)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val unsortedCoverFlow = collectionRepository.observeUnsorted(1, 0)
+
+    private data class PagingState(
+        val page: Int = 0,
+        val items: List<com.forgery.app.core.model.HistoryItem> = emptyList(),
+        val total: Int = 0,
+    )
+
+    private val pagingState = combine(
         page,
         pageItems,
         historyRepository.count(),
+    ) { p, items, total ->
+        PagingState(p, items, total)
+    }
+
+    val uiState: StateFlow<GalleryUiState> = combine(
+        pagingState,
         selectState,
-    ) { p, items, total, s ->
-        val totalPages = maxOf(1, (total + PAGE_SIZE - 1) / PAGE_SIZE)
+        collectionState,
+        unsortedCoverFlow,
+    ) { pg, s, c, unsortedCover ->
+        val totalPages = maxOf(1, (pg.total + PAGE_SIZE - 1) / PAGE_SIZE)
         GalleryUiState.Success(
-            items = items,
-            page = p.coerceIn(0, totalPages - 1),
+            items = pg.items,
+            page = pg.page.coerceIn(0, totalPages - 1),
             totalPages = totalPages,
-            total = total,
+            total = pg.total,
             selection = s.selection,
             selecting = s.selecting,
             confirm = s.confirm,
+            viewMode = c.mode,
+            collections = c.collections,
+            unsortedCount = c.unsortedCount,
+            unsortedCover = unsortedCover.firstOrNull(),
+            collectionDialog = c.dialog,
+            dialogInput = c.dialogInput,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -153,6 +200,67 @@ class GalleryViewModel @Inject constructor(
                     null -> Unit
                 }
             }
+            is GalleryAction.SetViewMode -> {
+                viewModeFlow.value = action.mode
+                if (action.mode == GalleryViewMode.COLLECTIONS) {
+                    selectingFlow.value = false
+                    selection.value = emptySet()
+                    confirmFlow.value = null
+                }
+            }
+            is GalleryAction.RequestCreateCollection -> {
+                if (action.ids.isNotEmpty()) {
+                    dialogInputFlow.value = TextFieldValue("")
+                    collectionDialogFlow.value = GalleryCollectionDialog.Create(action.ids)
+                }
+            }
+            is GalleryAction.RequestAddToCollection -> {
+                if (action.ids.isNotEmpty()) {
+                    collectionDialogFlow.value = GalleryCollectionDialog.AddTo(action.ids)
+                }
+            }
+            is GalleryAction.CollectionNameChanged -> {
+                dialogInputFlow.value = action.value
+            }
+            GalleryAction.ConfirmCreateCollection -> {
+                val dialog = collectionDialogFlow.value as? GalleryCollectionDialog.Create
+                    ?: return
+                val name = dialogInputFlow.value.text.trim()
+                if (name.isEmpty()) return
+                viewModelScope.launch {
+                    runCatching { collectionRepository.createCollection(name, dialog.ids) }
+                    collectionDialogFlow.value = null
+                    dialogInputFlow.value = TextFieldValue("")
+                    selection.value = emptySet()
+                    selectingFlow.value = false
+                }
+            }
+            is GalleryAction.ConfirmAddToCollection -> {
+                val dialog = collectionDialogFlow.value as? GalleryCollectionDialog.AddTo
+                    ?: return
+                viewModelScope.launch {
+                    runCatching { collectionRepository.addToCollection(action.collectionId, dialog.ids) }
+                    collectionDialogFlow.value = null
+                    selection.value = emptySet()
+                    selectingFlow.value = false
+                }
+            }
+            is GalleryAction.RequestDeleteCollection -> {
+                collectionDialogFlow.value =
+                    GalleryCollectionDialog.DeleteCollection(action.collectionId, action.name)
+            }
+            GalleryAction.ConfirmDeleteCollection -> {
+                val dialog = collectionDialogFlow.value as? GalleryCollectionDialog.DeleteCollection
+                    ?: return
+                viewModelScope.launch {
+                    runCatching { collectionRepository.deleteCollection(dialog.collectionId) }
+                    collectionDialogFlow.value = null
+                }
+            }
+            GalleryAction.DismissCollectionDialog -> {
+                collectionDialogFlow.value = null
+                dialogInputFlow.value = TextFieldValue("")
+            }
         }
     }
 
@@ -174,4 +282,13 @@ sealed interface GalleryAction {
     data class RequestDeleteSingle(val id: Long) : GalleryAction
     data object ConfirmDelete : GalleryAction
     data object DismissDelete : GalleryAction
+    data class SetViewMode(val mode: GalleryViewMode) : GalleryAction
+    data class RequestCreateCollection(val ids: List<Long>) : GalleryAction
+    data class RequestAddToCollection(val ids: List<Long>) : GalleryAction
+    data class CollectionNameChanged(val value: TextFieldValue) : GalleryAction
+    data object ConfirmCreateCollection : GalleryAction
+    data class ConfirmAddToCollection(val collectionId: Long) : GalleryAction
+    data class RequestDeleteCollection(val collectionId: Long, val name: String) : GalleryAction
+    data object ConfirmDeleteCollection : GalleryAction
+    data object DismissCollectionDialog : GalleryAction
 }

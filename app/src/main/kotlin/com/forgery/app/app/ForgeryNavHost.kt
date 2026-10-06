@@ -27,8 +27,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.forgery.app.feature.analyze.api.AnalyzeRoute
 import com.forgery.app.feature.analyze.impl.analyzeScreen
+import com.forgery.app.feature.gallery.api.GalleryCollectionRoute
 import com.forgery.app.feature.gallery.api.GalleryDetailRoute
 import com.forgery.app.feature.gallery.api.GalleryRoute
+import com.forgery.app.feature.gallery.impl.collectionScreen
 import com.forgery.app.feature.gallery.impl.galleryDetailScreen
 import com.forgery.app.feature.gallery.impl.galleryScreen
 import com.forgery.app.feature.generate.api.GenerateRoute
@@ -129,6 +131,16 @@ fun ForgeryNavHost(
             galleryScreen(
                 onBackClick = {},
                 onNavigateToDetail = { id -> nav.navigate(GalleryDetailRoute(id)) },
+                onNavigateToCollection = { collectionId ->
+                    nav.navigate(GalleryCollectionRoute(collectionId))
+                },
+            )
+            collectionScreen(
+                onBackClick = { nav.popBackStack() },
+                onNavigateToDetail = { id, collectionId ->
+                    nav.navigate(GalleryDetailRoute(id, collectionId))
+                },
+                onCollectionDeleted = { nav.popBackStack() },
             )
             galleryDetailScreen(
                 onBackClick = { nav.popBackStack() },

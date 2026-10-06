@@ -11,8 +11,11 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlaylistRemove
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -41,7 +44,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.forgery.app.core.common.Result
 import com.forgery.app.core.designsystem.ForgeryTheme
 import com.forgery.app.core.model.HistoryItem
+import com.forgery.app.core.ui.DraftTextField
 import com.forgery.app.core.ui.LoadingState
+import com.forgery.app.feature.gallery.api.UNSORTED_COLLECTION_ID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -62,6 +67,7 @@ internal fun GalleryDetailRoute(
 
     GalleryDetailScreen(
         uiState = uiState,
+        collectionId = viewModel.collectionId,
         onAction = viewModel::onAction,
         observeItem = viewModel::observeItem,
         onBackClick = onBackClick,
@@ -74,6 +80,7 @@ internal fun GalleryDetailRoute(
 @Composable
 internal fun GalleryDetailScreen(
     uiState: GalleryDetailUiState,
+    collectionId: Long?,
     onAction: (GalleryDetailAction) -> Unit,
     observeItem: (Long) -> Flow<HistoryItem?>,
     onBackClick: () -> Unit,
@@ -86,6 +93,7 @@ internal fun GalleryDetailScreen(
             GalleryDetailUiState.Loading -> LoadingState(Modifier.fillMaxSize())
             is GalleryDetailUiState.Success -> GalleryDetailContent(
                 state = uiState,
+                collectionId = collectionId,
                 onAction = onAction,
                 observeItem = observeItem,
                 onBackClick = onBackClick,
@@ -100,6 +108,7 @@ internal fun GalleryDetailScreen(
 @Composable
 private fun GalleryDetailContent(
     state: GalleryDetailUiState.Success,
+    collectionId: Long?,
     onAction: (GalleryDetailAction) -> Unit,
     observeItem: (Long) -> Flow<HistoryItem?>,
     onBackClick: () -> Unit,
@@ -177,6 +186,18 @@ private fun GalleryDetailContent(
                     IconButton(onClick = { shareImage(context, item.imagePath) }) {
                         Icon(Icons.Filled.Share, contentDescription = "Share")
                     }
+                    if (collectionId != null && collectionId != UNSORTED_COLLECTION_ID) {
+                        IconButton(onClick = { onAction(GalleryDetailAction.RemoveFromCollection) }) {
+                            Icon(Icons.Filled.PlaylistRemove, contentDescription = "Remove from collection")
+                        }
+                    } else {
+                        IconButton(onClick = { onAction(GalleryDetailAction.RequestCreateCollection) }) {
+                            Icon(Icons.Filled.CreateNewFolder, contentDescription = "Create collection")
+                        }
+                        IconButton(onClick = { onAction(GalleryDetailAction.RequestAddToCollection) }) {
+                            Icon(Icons.Filled.PlaylistAdd, contentDescription = "Add to collection")
+                        }
+                    }
                 }
                 Button(
                     onClick = { onNavigateToAnalyze(toFileUri(item.imagePath)) },
@@ -198,6 +219,42 @@ private fun GalleryDetailContent(
                 TextButton(onClick = { onAction(GalleryDetailAction.DismissDelete) }) { Text("Cancel") }
             },
         )
+    }
+
+    state.collectionDialog?.let { dialog ->
+        when (dialog) {
+            is GalleryCollectionDialog.Create -> AlertDialog(
+                onDismissRequest = { onAction(GalleryDetailAction.DismissCollectionDialog) },
+                title = { Text("New collection") },
+                text = {
+                    DraftTextField(
+                        value = state.dialogInput,
+                        onValueChange = { onAction(GalleryDetailAction.CollectionNameChanged(it)) },
+                        label = "Name",
+                        singleLine = true,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = { onAction(GalleryDetailAction.ConfirmCreateCollection) },
+                        enabled = state.dialogInput.text.isNotBlank(),
+                    ) { Text("CREATE") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { onAction(GalleryDetailAction.DismissCollectionDialog) }) {
+                        Text("Cancel")
+                    }
+                },
+            )
+            is GalleryCollectionDialog.AddTo -> CollectionPickerDialog(
+                pendingCount = dialog.ids.size,
+                collections = state.collections,
+                onPick = { onAction(GalleryDetailAction.ConfirmAddToCollection(it)) },
+                onNewCollection = { onAction(GalleryDetailAction.RequestCreateCollection) },
+                onDismiss = { onAction(GalleryDetailAction.DismissCollectionDialog) },
+            )
+            is GalleryCollectionDialog.DeleteCollection -> Unit
+        }
     }
 }
 
@@ -241,6 +298,7 @@ private fun GalleryDetailScreenPreview() {
                 ids = listOf(9L, 7L, 5L),
                 page = 1,
             ),
+            collectionId = null,
             onAction = {},
             observeItem = { flowOf(previewItem) },
             onBackClick = {},

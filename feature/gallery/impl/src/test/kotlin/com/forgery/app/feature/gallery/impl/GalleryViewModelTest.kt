@@ -1,12 +1,16 @@
 package com.forgery.app.feature.gallery.impl
 
+import androidx.compose.ui.text.input.TextFieldValue
+import com.forgery.app.core.data.CollectionRepository
 import com.forgery.app.core.data.HistoryRepository
+import com.forgery.app.core.model.GalleryCollection
 import com.forgery.app.core.model.HistoryItem
 import com.forgery.app.core.testing.TestDispatcherRule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -52,9 +56,14 @@ class GalleryViewModelTest {
     @get:Rule
     val dispatcherRule = TestDispatcherRule()
 
+    private fun viewModel(
+        history: FakeHistoryRepository = FakeHistoryRepository(),
+        collections: FakeCollectionRepository = FakeCollectionRepository(),
+    ) = GalleryViewModel(history, collections)
+
     @Test
     fun `first page shows 50 of 120`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         val state = vm.uiState.firstSuccess()
         assertEquals(50, state.items.size)
         assertEquals(120, state.total)
@@ -64,7 +73,7 @@ class GalleryViewModelTest {
 
     @Test
     fun `paging clamps at bounds`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         vm.uiState.firstSuccess()
         vm.onAction(GalleryAction.PrevPage)
         assertEquals(0, vm.uiState.firstSuccess().page)
@@ -76,7 +85,7 @@ class GalleryViewModelTest {
 
     @Test
     fun `long-press enters selecting mode and toggles selection`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         val id = vm.uiState.firstSuccess().items.first().id
 
         vm.onAction(GalleryAction.ItemLongClicked(id))
@@ -88,7 +97,7 @@ class GalleryViewModelTest {
 
     @Test
     fun `tap in selecting mode toggles, tap outside mode is ignored`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         val first = vm.uiState.firstSuccess()
         val id = first.items.first().id
         val other = first.items[1].id
@@ -111,7 +120,7 @@ class GalleryViewModelTest {
 
     @Test
     fun `enter and exit select resets selection`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         val id = vm.uiState.firstSuccess().items.first().id
 
         vm.onAction(GalleryAction.EnterSelect)
@@ -129,7 +138,7 @@ class GalleryViewModelTest {
     @Test
     fun `request all then dismiss keeps data`() = runTest {
         val repo = FakeHistoryRepository()
-        val vm = GalleryViewModel(repo)
+        val vm = viewModel(history = repo)
         vm.uiState.firstSuccess()
 
         vm.onAction(GalleryAction.RequestDeleteAll)
@@ -145,7 +154,7 @@ class GalleryViewModelTest {
     @Test
     fun `request all then confirm clears and resets`() = runTest {
         val repo = FakeHistoryRepository()
-        val vm = GalleryViewModel(repo)
+        val vm = viewModel(history = repo)
         vm.uiState.firstSuccess()
 
         vm.onAction(GalleryAction.EnterSelect)
@@ -164,7 +173,7 @@ class GalleryViewModelTest {
     @Test
     fun `request selected then confirm deletes and resets selecting`() = runTest {
         val repo = FakeHistoryRepository()
-        val vm = GalleryViewModel(repo)
+        val vm = viewModel(history = repo)
         val first = vm.uiState.firstSuccess()
         val id = first.items.first().id
 
@@ -184,7 +193,7 @@ class GalleryViewModelTest {
     @Test
     fun `request single then confirm deletes one`() = runTest {
         val repo = FakeHistoryRepository()
-        val vm = GalleryViewModel(repo)
+        val vm = viewModel(history = repo)
         val id = vm.uiState.firstSuccess().items.first().id
 
         vm.onAction(GalleryAction.RequestDeleteSingle(id))
@@ -201,7 +210,7 @@ class GalleryViewModelTest {
 
     @Test
     fun `request selected with empty selection does nothing`() = runTest {
-        val vm = GalleryViewModel(FakeHistoryRepository())
+        val vm = viewModel()
         vm.uiState.firstSuccess()
 
         vm.onAction(GalleryAction.EnterSelect)
@@ -213,7 +222,7 @@ class GalleryViewModelTest {
     @Test
     fun `H-6 external tail removal clamps page to last non-empty`() = runTest {
         val repo = FakeHistoryRepository()
-        val vm = GalleryViewModel(repo)
+        val vm = viewModel(history = repo)
         vm.uiState.firstSuccess()
 
         vm.onAction(GalleryAction.NextPage)
@@ -231,6 +240,198 @@ class GalleryViewModelTest {
         assertTrue(state.items.isNotEmpty())
     }
 
+    @Test
+    fun `defaults to solo mode with collections listed`() = runTest {
+        val vm = viewModel()
+        val state = vm.uiState.firstSuccess()
+        assertEquals(GalleryViewMode.SOLO, state.viewMode)
+        assertEquals(1, state.collections.size)
+        assertEquals("Trip", state.collections.first().name)
+        assertNull(state.collectionDialog)
+    }
+
+    @Test
+    fun `switching to collections exits select mode`() = runTest {
+        val vm = viewModel()
+        val id = vm.uiState.firstSuccess().items.first().id
+        vm.onAction(GalleryAction.ItemLongClicked(id))
+        assertTrue(vm.uiState.firstSuccess().selecting)
+
+        vm.onAction(GalleryAction.SetViewMode(GalleryViewMode.COLLECTIONS))
+        val state = vm.uiState.firstSuccess()
+        assertEquals(GalleryViewMode.COLLECTIONS, state.viewMode)
+        assertFalse(state.selecting)
+        assertTrue(state.selection.isEmpty())
+
+        vm.onAction(GalleryAction.SetViewMode(GalleryViewMode.SOLO))
+        assertEquals(GalleryViewMode.SOLO, vm.uiState.firstSuccess().viewMode)
+    }
+
+    @Test
+    fun `create collection from selection resets selecting`() = runTest {
+        val collections = FakeCollectionRepository()
+        val vm = viewModel(collections = collections)
+        val id = vm.uiState.firstSuccess().items.first().id
+
+        vm.onAction(GalleryAction.ItemLongClicked(id))
+        vm.onAction(GalleryAction.RequestCreateCollection(listOf(id)))
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.Create)
+
+        vm.onAction(GalleryAction.CollectionNameChanged(TextFieldValue("  Trip  ")))
+        vm.onAction(GalleryAction.ConfirmCreateCollection)
+
+        assertEquals(listOf("Trip" to listOf(id)), collections.created)
+        val state = vm.uiState.firstSuccess()
+        assertNull(state.collectionDialog)
+        assertFalse(state.selecting)
+        assertTrue(state.selection.isEmpty())
+    }
+
+    @Test
+    fun `blank collection name does not create`() = runTest {
+        val collections = FakeCollectionRepository()
+        val vm = viewModel(collections = collections)
+        val id = vm.uiState.firstSuccess().items.first().id
+
+        vm.onAction(GalleryAction.RequestCreateCollection(listOf(id)))
+        vm.onAction(GalleryAction.CollectionNameChanged(TextFieldValue("   ")))
+        vm.onAction(GalleryAction.ConfirmCreateCollection)
+
+        assertTrue(collections.created.isEmpty())
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.Create)
+    }
+
+    @Test
+    fun `add selection to existing collection`() = runTest {
+        val collections = FakeCollectionRepository()
+        val vm = viewModel(collections = collections)
+        val id = vm.uiState.firstSuccess().items.first().id
+
+        vm.onAction(GalleryAction.ItemLongClicked(id))
+        vm.onAction(GalleryAction.RequestAddToCollection(listOf(id)))
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.AddTo)
+
+        vm.onAction(GalleryAction.ConfirmAddToCollection(1L))
+
+        assertEquals(listOf(1L to listOf(id)), collections.added)
+        val state = vm.uiState.firstSuccess()
+        assertNull(state.collectionDialog)
+        assertFalse(state.selecting)
+    }
+
+    @Test
+    fun `delete collection removes grouping only`() = runTest {
+        val collections = FakeCollectionRepository()
+        val history = FakeHistoryRepository()
+        val vm = viewModel(history = history, collections = collections)
+        vm.uiState.firstSuccess()
+
+        vm.onAction(GalleryAction.RequestDeleteCollection(1L, "Trip"))
+        assertTrue(vm.uiState.firstSuccess().collectionDialog is GalleryCollectionDialog.DeleteCollection)
+
+        vm.onAction(GalleryAction.ConfirmDeleteCollection)
+
+        assertEquals(listOf(1L), collections.deletedCollections)
+        assertNull(vm.uiState.firstSuccess().collectionDialog)
+        // Images are untouched: solo total unchanged.
+        assertEquals(120, vm.uiState.firstSuccess().total)
+    }
+
     private suspend fun StateFlow<GalleryUiState>.firstSuccess(): GalleryUiState.Success =
         first { it is GalleryUiState.Success } as GalleryUiState.Success
+}
+
+private class FakeCollectionRepository(
+    initial: Map<Long, List<HistoryItem>> = mapOf(
+        1L to listOf(
+            HistoryItem(1, "/img1.png", null, "{\"seed\":1}", "today"),
+            HistoryItem(2, "/img2.png", null, "{\"seed\":2}", "today"),
+        ),
+    ),
+    private val names: MutableMap<Long, String> = mutableMapOf(1L to "Trip"),
+) : CollectionRepository {
+    private val data = MutableStateFlow(initial)
+    val created = mutableListOf<Pair<String, List<Long>>>()
+    val added = mutableListOf<Pair<Long, List<Long>>>()
+    val deletedCollections = mutableListOf<Long>()
+    val removed = mutableListOf<Pair<Long, List<Long>>>()
+    val reordered = mutableListOf<Pair<Long, List<Long>>>()
+    val renamed = mutableListOf<Pair<Long, String>>()
+    private var nextId = 100L
+
+    override fun observeCollections(): Flow<List<GalleryCollection>> =
+        data.map { m ->
+            m.map { (id, items) ->
+                GalleryCollection(id, names[id] ?: "C$id", 0, items.size, items.firstOrNull())
+            }
+        }
+
+    override fun observeCollection(collectionId: Long): Flow<GalleryCollection?> =
+        data.map { m ->
+            m[collectionId]?.let {
+                GalleryCollection(collectionId, names[collectionId] ?: "C$collectionId", 0, it.size, it.firstOrNull())
+            }
+        }
+
+    override fun observeItems(collectionId: Long, limit: Int, offset: Int): Flow<List<HistoryItem>> =
+        data.map { (it[collectionId] ?: emptyList()).drop(offset).take(limit) }
+
+    override fun observeIds(collectionId: Long): Flow<List<Long>> =
+        data.map { (it[collectionId] ?: emptyList()).map { item -> item.id } }
+
+    override fun countInCollection(collectionId: Long): Flow<Int> =
+        data.map { (it[collectionId] ?: emptyList()).size }
+
+    override fun observeUnsorted(limit: Int, offset: Int): Flow<List<HistoryItem>> =
+        flowOf(emptyList())
+
+    override fun observeUnsortedIds(): Flow<List<Long>> = flowOf(emptyList())
+
+    override fun countUnsorted(): Flow<Int> = flowOf(0)
+
+    override fun observeCollectionsForImage(historyId: Long): Flow<List<GalleryCollection>> =
+        data.map { m ->
+            m.filter { (_, v) -> v.any { it.id == historyId } }
+                .map { (id, _) -> GalleryCollection(id, names[id] ?: "C$id") }
+        }
+
+    override suspend fun createCollection(name: String, initialIds: List<Long>): Long {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty())
+        created += trimmed to initialIds
+        val id = nextId++
+        names[id] = trimmed
+        data.value = data.value + (id to initialIds.map { itemFor(it) })
+        return id
+    }
+
+    override suspend fun rename(collectionId: Long, name: String) {
+        renamed += collectionId to name
+        names[collectionId] = name
+    }
+
+    override suspend fun deleteCollection(collectionId: Long) {
+        deletedCollections += collectionId
+        data.value = data.value - collectionId
+    }
+
+    override suspend fun addToCollection(collectionId: Long, historyIds: List<Long>) {
+        added += collectionId to historyIds
+        val merged = ((data.value[collectionId] ?: emptyList()) + historyIds.map { itemFor(it) })
+            .distinctBy { it.id }
+        data.value = data.value + (collectionId to merged)
+    }
+
+    override suspend fun removeFromCollection(collectionId: Long, historyIds: List<Long>) {
+        removed += collectionId to historyIds
+        data.value = data.value + (collectionId to (data.value[collectionId] ?: emptyList()).filterNot { it.id in historyIds })
+    }
+
+    override suspend fun reorder(collectionId: Long, orderedIds: List<Long>) {
+        reordered += collectionId to orderedIds
+        val byId = (data.value[collectionId] ?: emptyList()).associateBy { it.id }
+        data.value = data.value + (collectionId to orderedIds.mapNotNull { byId[it] })
+    }
+
+    private fun itemFor(id: Long) = HistoryItem(id, "/img$id.png", null, "{\"seed\":$id}", "today")
 }

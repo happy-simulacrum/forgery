@@ -1,12 +1,16 @@
 package com.forgery.app.feature.gallery.impl
 
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import com.forgery.app.core.data.CollectionRepository
 import com.forgery.app.core.data.HistoryRepository
+import com.forgery.app.core.model.GalleryCollection
 import com.forgery.app.core.model.HistoryItem
 import com.forgery.app.feature.gallery.api.GalleryDetailRoute
+import com.forgery.app.feature.gallery.api.UNSORTED_COLLECTION_ID
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +29,7 @@ import javax.inject.Inject
 class GalleryDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val historyRepository: HistoryRepository,
+    private val collectionRepository: CollectionRepository,
 ) : ViewModel() {
 
     // toRoute() needs the Android framework (Bundle) and throws on JVM unit tests;
@@ -33,27 +38,44 @@ class GalleryDetailViewModel @Inject constructor(
         savedStateHandle.toRoute<GalleryDetailRoute>().id
     }.getOrNull() ?: savedStateHandle.get<Long>("id") ?: -1L
 
-    // ids order: new -> old (contract of HistoryRepository.observeIds).
-    private val idsFlow: Flow<List<Long>> = historyRepository.observeIds()
+    val collectionId: Long? = runCatching {
+        savedStateHandle.toRoute<GalleryDetailRoute>().collectionId
+    }.getOrNull() ?: savedStateHandle.get<Long>("collectionId")
+
+    // ids order: new -> old (contract of HistoryRepository.observeIds),
+    // or collection sortOrder when opened from a collection gallery.
+    private val idsFlow: Flow<List<Long>> = if (collectionId == null) {
+        historyRepository.observeIds()
+    } else {
+        collectionRepository.observeIds(collectionId)
+    }
 
     // Null = not set yet: resolved from ids via initialId until the first PageChanged/delete.
     private val pageFlow = MutableStateFlow<Int?>(null)
     private val confirmFlow = MutableStateFlow(false)
     private val deletedFlow = MutableStateFlow(false)
+    private val collectionDialogFlow = MutableStateFlow<GalleryCollectionDialog?>(null)
+    private val dialogInputFlow = MutableStateFlow(TextFieldValue(""))
 
     val uiState: StateFlow<GalleryDetailUiState> = combine(
-        idsFlow,
-        pageFlow,
-        confirmFlow,
-        deletedFlow,
-    ) { ids, pageOrNull, confirm, deleted ->
-        PagerSnapshot(
-            ids = ids,
-            page = effectivePage(ids, pageOrNull),
-            confirmDelete = confirm,
-            deleted = deleted,
-        )
-    }.flatMapLatest { snapshot ->
+        combine(idsFlow, pageFlow, confirmFlow, deletedFlow) { ids, pageOrNull, confirm, deleted ->
+            PagerSnapshot(
+                ids = ids,
+                page = effectivePage(ids, pageOrNull),
+                confirmDelete = confirm,
+                deleted = deleted,
+            )
+        },
+        combine(
+            collectionRepository.observeCollections(),
+            collectionDialogFlow,
+            dialogInputFlow,
+        ) { collections, dialog, input ->
+            CollectionDialogState(collections, dialog, input)
+        },
+    ) { pager, dialogs ->
+        Pair(pager, dialogs)
+    }.flatMapLatest { (snapshot, dialogs) ->
         val currentId = snapshot.ids.getOrNull(snapshot.page)
         val toState = { item: HistoryItem? ->
             GalleryDetailUiState.Success(
@@ -62,6 +84,9 @@ class GalleryDetailViewModel @Inject constructor(
                 page = snapshot.page,
                 confirmDelete = snapshot.confirmDelete,
                 deleted = snapshot.deleted,
+                collections = dialogs.collections,
+                collectionDialog = dialogs.dialog,
+                dialogInput = dialogs.dialogInput,
             )
         }
         if (currentId == null) flowOf(toState(null))
@@ -96,7 +121,66 @@ class GalleryDetailViewModel @Inject constructor(
                     }
                 }
             }
+            GalleryDetailAction.RequestCreateCollection -> {
+                val id = currentItemId() ?: return
+                dialogInputFlow.value = TextFieldValue("")
+                collectionDialogFlow.value = GalleryCollectionDialog.Create(listOf(id))
+            }
+            GalleryDetailAction.RequestAddToCollection -> {
+                val id = currentItemId() ?: return
+                collectionDialogFlow.value = GalleryCollectionDialog.AddTo(listOf(id))
+            }
+            is GalleryDetailAction.CollectionNameChanged -> {
+                dialogInputFlow.value = action.value
+            }
+            GalleryDetailAction.ConfirmCreateCollection -> {
+                val dialog = collectionDialogFlow.value as? GalleryCollectionDialog.Create ?: return
+                val name = dialogInputFlow.value.text.trim()
+                if (name.isEmpty()) return
+                viewModelScope.launch {
+                    runCatching { collectionRepository.createCollection(name, dialog.ids) }
+                    collectionDialogFlow.value = null
+                    dialogInputFlow.value = TextFieldValue("")
+                }
+            }
+            is GalleryDetailAction.ConfirmAddToCollection -> {
+                val dialog = collectionDialogFlow.value as? GalleryCollectionDialog.AddTo ?: return
+                viewModelScope.launch {
+                    runCatching {
+                        collectionRepository.addToCollection(action.collectionId, dialog.ids)
+                    }
+                    collectionDialogFlow.value = null
+                }
+            }
+            GalleryDetailAction.DismissCollectionDialog -> {
+                collectionDialogFlow.value = null
+                dialogInputFlow.value = TextFieldValue("")
+            }
+            GalleryDetailAction.RemoveFromCollection -> {
+                val cid = collectionId
+                if (cid == null || cid == UNSORTED_COLLECTION_ID) return
+                viewModelScope.launch {
+                    val ids = idsFlow.first()
+                    val page = effectivePage(ids, pageFlow.value)
+                    val currentId = ids.getOrNull(page) ?: return@launch
+                    runCatching {
+                        collectionRepository.removeFromCollection(cid, listOf(currentId))
+                    }
+                    if (ids.size <= 1) {
+                        deletedFlow.value = true
+                    } else {
+                        // Stay on the same index: the next neighbor slides in;
+                        // step back when the last page was removed.
+                        pageFlow.value = minOf(page, ids.size - 2)
+                    }
+                }
+            }
         }
+    }
+
+    private fun currentItemId(): Long? {
+        val state = uiState.value as? GalleryDetailUiState.Success ?: return null
+        return state.item?.id ?: state.ids.getOrNull(state.page)
     }
 
     private fun effectivePage(ids: List<Long>, pageOrNull: Int?): Int {
@@ -104,6 +188,12 @@ class GalleryDetailViewModel @Inject constructor(
         if (pageOrNull != null) return pageOrNull.coerceIn(0, ids.lastIndex)
         return ids.indexOf(initialId).takeIf { it >= 0 } ?: 0
     }
+
+    private data class CollectionDialogState(
+        val collections: List<GalleryCollection>,
+        val dialog: GalleryCollectionDialog?,
+        val dialogInput: TextFieldValue,
+    )
 
     private data class PagerSnapshot(
         val ids: List<Long>,
@@ -122,6 +212,9 @@ sealed interface GalleryDetailUiState {
         val page: Int = 0,
         val confirmDelete: Boolean = false,
         val deleted: Boolean = false,
+        val collections: List<GalleryCollection> = emptyList(),
+        val collectionDialog: GalleryCollectionDialog? = null,
+        val dialogInput: TextFieldValue = TextFieldValue(""),
     ) : GalleryDetailUiState
 }
 
@@ -130,4 +223,12 @@ sealed interface GalleryDetailAction {
     data object ConfirmDelete : GalleryDetailAction
     data object DismissDelete : GalleryDetailAction
     data class PageChanged(val index: Int) : GalleryDetailAction
+    data object RequestCreateCollection : GalleryDetailAction
+    data object RequestAddToCollection : GalleryDetailAction
+    data class CollectionNameChanged(val value: TextFieldValue) : GalleryDetailAction
+    data object ConfirmCreateCollection : GalleryDetailAction
+    data class ConfirmAddToCollection(val collectionId: Long) : GalleryDetailAction
+    data object DismissCollectionDialog : GalleryDetailAction
+    /** Removes the current image from the open collection (image itself stays). */
+    data object RemoveFromCollection : GalleryDetailAction
 }

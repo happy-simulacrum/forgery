@@ -2,6 +2,7 @@ package com.forgery.app.core.database
 
 import androidx.room.Dao
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
@@ -71,6 +72,48 @@ data class QueueResultEntity(
     val error: String? = null,
 )
 
+@Entity(tableName = "collections")
+data class CollectionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
+    tableName = "collection_items",
+    primaryKeys = ["collectionId", "historyId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = CollectionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["collectionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = HistoryEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["historyId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [androidx.room.Index(value = ["collectionId"]), androidx.room.Index(value = ["historyId"])],
+)
+data class CollectionItemEntity(
+    val collectionId: Long,
+    val historyId: Long,
+    val sortOrder: Int,
+)
+
+/** Collection with aggregated count + cover paths (first item by sortOrder). */
+data class CollectionWithCover(
+    val id: Long,
+    val name: String,
+    val createdAt: Long,
+    val count: Int,
+    val coverImagePath: String?,
+    val coverThumbPath: String?,
+)
+
 /** Lightweight row for gallery file cleanup — avoids loading full entities. */
 data class HistoryPaths(
     val imagePath: String,
@@ -106,6 +149,96 @@ interface HistoryDao {
 
     @Query("SELECT imagePath, thumbPath FROM history")
     suspend fun getAllPaths(): List<HistoryPaths>
+}
+
+@Dao
+interface CollectionDao {
+    @Query("SELECT * FROM collections ORDER BY createdAt ASC")
+    fun observeCollections(): Flow<List<CollectionEntity>>
+
+    @Query("SELECT * FROM collections WHERE id = :id")
+    fun observeCollectionById(id: Long): Flow<List<CollectionEntity>>
+
+    @Query("SELECT * FROM collections WHERE id = :id")
+    suspend fun getCollectionById(id: Long): CollectionEntity?
+
+    @Query(
+        "SELECT c.id AS id, c.name AS name, c.createdAt AS createdAt, " +
+            "COUNT(ci.historyId) AS count, " +
+            "(SELECT h.thumbPath FROM collection_items ci2 JOIN history h ON h.id = ci2.historyId " +
+            "WHERE ci2.collectionId = c.id ORDER BY ci2.sortOrder ASC LIMIT 1) AS coverThumbPath, " +
+            "(SELECT h.imagePath FROM collection_items ci3 JOIN history h ON h.id = ci3.historyId " +
+            "WHERE ci3.collectionId = c.id ORDER BY ci3.sortOrder ASC LIMIT 1) AS coverImagePath " +
+            "FROM collections c LEFT JOIN collection_items ci ON ci.collectionId = c.id " +
+            "GROUP BY c.id ORDER BY c.createdAt ASC",
+    )
+    fun observeCollectionsWithCover(): Flow<List<CollectionWithCover>>
+
+    @Query(
+        "SELECT h.* FROM history h JOIN collection_items ci ON ci.historyId = h.id " +
+            "WHERE ci.collectionId = :collectionId ORDER BY ci.sortOrder ASC LIMIT :limit OFFSET :offset",
+    )
+    fun pagingCollectionItems(collectionId: Long, limit: Int, offset: Int): Flow<List<HistoryEntity>>
+
+    @Query(
+        "SELECT h.id FROM history h JOIN collection_items ci ON ci.historyId = h.id " +
+            "WHERE ci.collectionId = :collectionId ORDER BY ci.sortOrder ASC",
+    )
+    fun observeCollectionIds(collectionId: Long): Flow<List<Long>>
+
+    @Query("SELECT COUNT(*) FROM collection_items WHERE collectionId = :collectionId")
+    fun countInCollection(collectionId: Long): Flow<Int>
+
+    @Query(
+        "SELECT h.* FROM history h LEFT JOIN collection_items ci ON ci.historyId = h.id " +
+            "WHERE ci.historyId IS NULL ORDER BY h.createdAt DESC LIMIT :limit OFFSET :offset",
+    )
+    fun pagingUnsorted(limit: Int, offset: Int): Flow<List<HistoryEntity>>
+
+    @Query(
+        "SELECT h.id FROM history h LEFT JOIN collection_items ci ON ci.historyId = h.id " +
+            "WHERE ci.historyId IS NULL ORDER BY h.createdAt DESC",
+    )
+    fun observeUnsortedIds(): Flow<List<Long>>
+
+    @Query(
+        "SELECT COUNT(*) FROM history h LEFT JOIN collection_items ci ON ci.historyId = h.id " +
+            "WHERE ci.historyId IS NULL",
+    )
+    fun countUnsorted(): Flow<Int>
+
+    @Query("SELECT c.* FROM collections c JOIN collection_items ci ON ci.collectionId = c.id WHERE ci.historyId = :historyId")
+    fun observeCollectionsForImage(historyId: Long): Flow<List<CollectionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCollection(item: CollectionEntity): Long
+
+    @Query("UPDATE collections SET name = :name WHERE id = :id")
+    suspend fun renameCollection(id: Long, name: String)
+
+    @Query("DELETE FROM collections WHERE id = :id")
+    suspend fun deleteCollection(id: Long)
+
+    @Query("DELETE FROM collection_items WHERE collectionId = :collectionId")
+    suspend fun clearCollection(collectionId: Long)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun addItems(items: List<CollectionItemEntity>): List<Long>
+
+    @Query("SELECT COALESCE(MAX(sortOrder), -1) FROM collection_items WHERE collectionId = :collectionId")
+    suspend fun maxOrder(collectionId: Long): Int
+
+    @Query("DELETE FROM collection_items WHERE collectionId = :collectionId AND historyId IN (:historyIds)")
+    suspend fun removeItems(collectionId: Long, historyIds: List<Long>)
+
+    @Query("DELETE FROM collection_items WHERE collectionId = :collectionId AND historyId = :historyId")
+    suspend fun removeItem(collectionId: Long, historyId: Long)
+
+    @Query("UPDATE collection_items SET sortOrder = :order WHERE collectionId = :collectionId AND historyId = :historyId")
+    suspend fun updateOrder(collectionId: Long, historyId: Long, order: Int)
+
+    @Query("DELETE FROM collections")
+    suspend fun clearAll()
 }
 
 @Dao
@@ -217,8 +350,8 @@ interface QueueResultsDao {
 }
 
 @Database(
-    entities = [HistoryEntity::class, ComfyTemplateEntity::class, StyleEntity::class, QueueStateEntity::class, QueueJobEntity::class, QueueResultEntity::class],
-    version = 4,
+    entities = [HistoryEntity::class, ComfyTemplateEntity::class, StyleEntity::class, QueueStateEntity::class, QueueJobEntity::class, QueueResultEntity::class, CollectionEntity::class, CollectionItemEntity::class],
+    version = 5,
     exportSchema = false,
 )
 abstract class ForgeryDatabase : RoomDatabase() {
@@ -228,6 +361,7 @@ abstract class ForgeryDatabase : RoomDatabase() {
     abstract fun queueStateDao(): QueueStateDao
     abstract fun queueJobsDao(): QueueJobsDao
     abstract fun queueResultsDao(): QueueResultsDao
+    abstract fun collectionDao(): CollectionDao
 }
 
 val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -275,5 +409,29 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
                 "jobProgress REAL NOT NULL, batchTotal INTEGER NOT NULL, " +
                 "batchDone INTEGER NOT NULL)",
         )
+    }
+}
+
+/**
+ * Gallery collections (N:M grouping of history rows with explicit order).
+ * Deleting a collection removes only grouping rows — history rows and files stay.
+ */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // NOTE: no SQL DEFAULTs — Room validates exact TableInfo.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS collections (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "name TEXT NOT NULL, createdAt INTEGER NOT NULL)",
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS collection_items (" +
+                "collectionId INTEGER NOT NULL, historyId INTEGER NOT NULL, " +
+                "sortOrder INTEGER NOT NULL, PRIMARY KEY(collectionId, historyId), " +
+                "FOREIGN KEY(collectionId) REFERENCES collections(id) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                "FOREIGN KEY(historyId) REFERENCES history(id) ON UPDATE NO ACTION ON DELETE CASCADE)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_collection_items_collectionId ON collection_items(collectionId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_collection_items_historyId ON collection_items(historyId)")
     }
 }

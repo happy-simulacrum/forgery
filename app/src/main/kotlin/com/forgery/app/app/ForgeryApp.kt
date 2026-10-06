@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.forgery.app.core.data.OfflineFirstHistoryRepository
+import com.forgery.app.core.data.StorageAudit
 import com.forgery.app.core.network.ForgeApiFactory
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,9 @@ class ForgeryApp : Application(), Configuration.Provider {
     @Inject
     lateinit var historyRepository: OfflineFirstHistoryRepository
 
+    @Inject
+    lateinit var storageAudit: StorageAudit
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -37,6 +41,8 @@ class ForgeryApp : Application(), Configuration.Provider {
         // source of truth, so the sweep only removes unreferenced files).
         appScope.launch {
             runCatching { historyRepository.sweepOrphanFiles() }
+            // Read-only storage audit (logcat tag ForgeryStorage), no deletions.
+            runCatching { storageAudit.log() }
         }
     }
 

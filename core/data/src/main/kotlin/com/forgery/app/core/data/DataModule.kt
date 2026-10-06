@@ -9,6 +9,7 @@ import dagger.hilt.components.SingletonComponent
 @InstallIn(SingletonComponent::class)
 abstract class DataModule {
     @Binds abstract fun bindHistory(impl: OfflineFirstHistoryRepository): HistoryRepository
+    @Binds abstract fun bindCollections(impl: OfflineFirstCollectionRepository): CollectionRepository
     @Binds abstract fun bindConnection(impl: DefaultConnectionRepository): ConnectionRepository
     @Binds abstract fun bindGeneration(impl: DefaultGenerationRepository): GenerationRepository
     @Binds abstract fun bindQueue(impl: DefaultQueueRepository): QueueRepository
